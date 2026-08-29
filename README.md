@@ -11,19 +11,32 @@ Services.
 
 ## What it provides
 
-- one `GameServices` autoload on iOS, Android, and desktop
-- logical achievement and leaderboard IDs mapped to each platform
-- request objects that make concurrent asynchronous operations attributable
-- portable success and error results with native details preserved
-- runtime capability checks for features without true platform parity
-- named binary cloud saves with explicit conflict results and resolution
-- a stateful mock provider for editor development and automated tests
-- bundled Android AARs and iOS XCFrameworks, with their buildable source forks
+This addon is for a Godot game shipping on both iOS and Android that should not
+need platform branches throughout its gameplay code.
 
-The API covers authentication, player profiles, achievements, leaderboards,
-platform UI, server credentials, and cloud saves. See the
-[feasibility research](docs/research.md) for the semantic differences the API
-deliberately does not conceal.
+- Call the same methods for authentication, achievements, leaderboards,
+  platform UI, server credentials, and cloud saves on either platform.
+- Keep Apple and Google achievement and leaderboard IDs in one configuration
+  resource. Game code uses stable, game-owned names such as `first_win`.
+- Develop in the editor without a store account or native SDK. The mock provider
+  keeps authentication, achievements, scores, and saved games in memory.
+- Match every asynchronous result to the request that started it, including
+  concurrent saves or score submissions. Results share portable error codes and
+  retain native details for diagnostics.
+- Export with the native bridges included. The addon registers its Android AAR
+  and dependencies with Gradle; Godot's iOS exporter discovers the bundled
+  XCFramework.
+- Detect support at runtime instead of assuming similarly named platform
+  features behave the same. Unsupported operations fail explicitly.
+- Handle cloud-save conflicts in game code instead of silently choosing a copy.
+
+The addon normalizes client code; it does not merge the two platform backends.
+Game Center and Play Games keep separate players, achievements, leaderboards,
+and saved games. Cross-platform accounts or progression require your own
+backend. The game also remains responsible for App Store Connect, Play Console,
+signing, entitlements, and test accounts. See the
+[platform setup](docs/setup.md) and [feasibility research](docs/research.md)
+before committing to the integration.
 
 ## Installation
 
