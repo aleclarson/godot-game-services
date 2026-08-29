@@ -29,7 +29,7 @@ owned the request.
 | Leaderboards | `submit_score(id, score)`, `show_leaderboards(id)` |
 | Platform UI | `show_achievements()`, `show_leaderboards()` |
 | Server verification | `request_server_credentials(options)` |
-| Typed cloud saves | `cloud_saves.create()`, `load()`, `load_or_create()`, `save()`, `list()`, `delete()`, and conflict resolution methods |
+| Typed cloud saves | `cloud_saves.slot(name)`, `create()`, `load()`, `load_or_create()`, `update()`, `save()`, `exists()`, `list()`, `delete()`, validation, and conflict resolution |
 | Raw cloud saves | `save_game(name, data, metadata)`, `load_game(name)`, `list_saved_games()`, `delete_saved_game(id)`, `resolve_saved_game_conflict(...)` |
 
 Achievement and leaderboard methods accept game-owned logical IDs. Their Apple
@@ -46,16 +46,18 @@ code.
 
 `GameServices.cloud_saves` is a `CloudSaveStore` layered over the provider's
 binary save transport. It safely serializes Godot Variant values, attaches a
-versioned envelope, and returns typed documents:
+versioned envelope, and returns typed documents. For a fixed slot, use a
+`CloudSaveSlot` so its defaults and schema policy stay together:
 
 ```gdscript
-var saves := GameServices.cloud_saves
-saves.schema_version = 2
-
-var loaded := await saves.load_or_create("campaign", {
+var campaign := GameServices.cloud_saves.slot("campaign", {
 	"level": 1,
 	"coins": 0,
-}).wait()
+})
+campaign.schema_version = 2
+campaign.add_migration(1, _migrate_v1_to_v2)
+
+var loaded := await campaign.load_or_create().wait()
 if not loaded.ok:
 	push_warning(loaded.error_message)
 	return
@@ -63,9 +65,27 @@ if not loaded.ok:
 var document: CloudSaveDocument = loaded.data
 document.value.coins += 10
 
-var written := await saves.save(document).wait()
+var written := await campaign.save(document).wait()
 if written.ok:
 	document = written.data
+```
+
+`CloudSaveSlot` exposes `load()`, `load_or_create()`, `create()`, `update()`,
+`save()`, `exists()`, `delete()`, validation, and conflict-resolution methods. Its
+`schema_version`, migrations, `validator`, `conflict_policy`,
+`conflict_resolver`, and `max_conflict_attempts` are independent of other
+slots. A slot starts with the store's current settings, then can be configured
+independently. Use the store's methods directly for dynamic slot names.
+
+`update(mutator)` loads or creates the configured default, passes the decoded
+`CloudSaveDocument` to the callable, and saves it. The callable may mutate that
+document or return a replacement `CloudSaveDocument`; it runs exactly once, so
+a conflict is returned rather than silently replaying game logic.
+
+```gdscript
+var result := await campaign.update(func(document):
+	document.value.coins += 10
+).wait()
 ```
 
 `create()` returns an unsaved document. `save()` does not mutate its input; on
@@ -86,14 +106,28 @@ arrays, packed arrays, vectors, colors, transforms, and other value types retain
 their Godot types. Objects and unsupported values fail with `INVALID_ARGUMENT`
 instead of enabling object reconstruction.
 
+`validate(document)` performs the same local cloning, migration, domain
+validation, and serialization checks as `save()` without contacting a provider.
+Its successful result contains a `Dictionary` with a would-be `document` and
+`encoded_size`. `encoded_size(document)` returns just the encoded byte count,
+which is useful for enforcing an app's chosen provider-size limit before upload.
+
+Set `validator` to a callable that returns an empty string or `true` for valid
+values, or a non-empty error string/`false` otherwise:
+
+```gdscript
+campaign.validator = func(value):
+	return "campaign must be a Dictionary" if not value is Dictionary else ""
+```
+
 ### Schema migrations
 
 Register one migration for each version step:
 
 ```gdscript
-saves.schema_version = 3
-saves.add_migration(1, _migrate_v1_to_v2)
-saves.add_migration(2, _migrate_v2_to_v3)
+campaign.schema_version = 3
+campaign.add_migration(1, _migrate_v1_to_v2)
+campaign.add_migration(2, _migrate_v2_to_v3)
 
 func _migrate_v1_to_v2(value: Variant) -> Variant:
 	value["difficulty"] = "normal"
@@ -113,21 +147,21 @@ Manual resolution is the default. A conflicting `load()` or `save()` returns
 provider modification time:
 
 ```gdscript
-var loaded := await saves.load("campaign").wait()
+var loaded := await campaign.load().wait()
 if loaded.error_code == GameServicesResult.Code.CONFLICT:
 	var conflict: CloudSaveConflict = loaded.data
 	var chosen := conflict.highest_progress()
-	var resolved := await saves.resolve_with_candidate(conflict, chosen).wait()
+	var resolved := await campaign.resolve_with_candidate(conflict, chosen).wait()
 ```
 
-Merged values identify a provider candidate as the resolution base because
-Google requires its snapshot ID:
+Merged values may identify a provider candidate as the resolution base when
+needed. If omitted, the store uses the newest decoded candidate; this keeps
+Google's snapshot-ID requirement out of the common path:
 
 ```gdscript
-await saves.resolve_with_value(
+await campaign.resolve_with_value(
 	conflict,
 	merge_game_states(conflict.candidates),
-	conflict.newest(),
 	{"progress_value": 80}
 ).wait()
 ```

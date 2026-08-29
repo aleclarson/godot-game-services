@@ -28,7 +28,7 @@ static func choose(p_candidate: CloudSaveCandidate) -> CloudSaveResolution:
 
 static func merge(
 	p_value: Variant,
-	base_candidate: CloudSaveCandidate,
+	base_candidate: CloudSaveCandidate = null,
 	p_metadata: Dictionary = {}
 ) -> CloudSaveResolution:
 	var resolution := CloudSaveResolution.new()

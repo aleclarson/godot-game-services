@@ -21,8 +21,9 @@ failures cannot race past an `await` connection.
 
 ```text
 Game code
-    -> CloudSaveStore (typed values, schema migration, revisions, conflicts)
-        -> GameServices raw cloud-save transport
+    -> CloudSaveSlot (fixed-slot defaults and policy)
+        -> CloudSaveStore (typed values, schema migration, revisions, conflicts)
+            -> GameServices raw cloud-save transport
     -> GameServices (logical IDs, validation, result normalization)
         -> AppleGameCenterProvider -> native GameCenter singleton
         -> GooglePlayGamesProvider -> native GodotPlayGameServices singleton

@@ -454,6 +454,69 @@ func _test_cloud_save_store(
 		"Missing slots can produce an unsaved default document"
 	)
 
+	var scoped_slot := store.slot("scoped-slot", {"coins": 0})
+	scoped_slot.schema_version = 2
+	scoped_slot.add_migration(1, Callable(self, "_migrate_cloud_save_v1"))
+	scoped_slot.validator = Callable(self, "_validate_cloud_save_value")
+	var scoped_finished_count := [0]
+	scoped_slot.request_finished.connect(
+		func(_request: GameServicesRequest, _result: GameServicesResult) -> void:
+			scoped_finished_count[0] += 1
+	)
+	var scoped_load: GameServicesResult = await scoped_slot.load_or_create().wait()
+	_check(
+		scoped_load.ok
+		and scoped_load.data is CloudSaveDocument
+		and scoped_load.data.slot == "scoped-slot",
+		"Configured cloud-save slots retain their logical name"
+	)
+	if scoped_load.ok and scoped_load.data is CloudSaveDocument:
+		var scoped_document: CloudSaveDocument = scoped_load.data
+		scoped_document.value.coins = 7
+		var scoped_save: GameServicesResult = await scoped_slot.save(scoped_document).wait()
+		_check(scoped_save.ok, "Configured cloud-save slots delegate saves")
+	var scoped_update: GameServicesResult = await scoped_slot.update(
+		func(updated: CloudSaveDocument) -> void:
+			updated.value.coins += 5
+	).wait()
+	_check(
+		scoped_update.ok
+		and scoped_update.data is CloudSaveDocument
+		and scoped_update.data.value.coins == 12,
+		"Cloud-save updates combine load, mutation, and save"
+	)
+	var scoped_exists: GameServicesResult = await scoped_slot.exists().wait()
+	_check(scoped_exists.ok and scoped_exists.data, "Configured cloud-save slots expose logical existence")
+	var scoped_inspection := scoped_slot.validate(scoped_slot.create({"coins": 8}))
+	_check(
+		scoped_inspection.ok
+		and scoped_inspection.data is Dictionary
+		and scoped_inspection.data.document is CloudSaveDocument
+		and int(scoped_inspection.data.encoded_size) > 0,
+		"Cloud-save validation reports an encoded size without writing"
+	)
+	var scoped_size := scoped_slot.encoded_size(scoped_slot.create({"coins": 8}))
+	_check(scoped_size.ok and int(scoped_size.data) > 0, "Cloud-save encoded size is available before upload")
+	var invalid_scoped_validation := scoped_slot.validate(scoped_slot.create({"message": "missing coins"}))
+	_check(
+		invalid_scoped_validation.error_code == GameServicesResult.Code.INVALID_ARGUMENT,
+		"Cloud-save validators reject invalid domain values before upload"
+	)
+	var mismatched_document := store.create("another-slot", {"coins": 1})
+	var mismatched_save: GameServicesResult = await scoped_slot.save(mismatched_document).wait()
+	_check(
+		mismatched_save.error_code == GameServicesResult.Code.INVALID_ARGUMENT,
+		"Configured cloud-save slots reject documents from another slot"
+	)
+	var scoped_delete: GameServicesResult = await scoped_slot.delete().wait()
+	_check(scoped_delete.ok and scoped_delete.data.deleted, "Configured cloud-save slots delete by name")
+	var scoped_missing: GameServicesResult = await scoped_slot.exists().wait()
+	_check(scoped_missing.ok and not scoped_missing.data, "Cloud-save existence reflects deletion")
+	_check(
+		scoped_finished_count[0] >= 6,
+		"Configured cloud-save slots forward request completion (%d)" % scoped_finished_count[0]
+	)
+
 	var deleted_result: GameServicesResult = await store.delete("typed-slot").wait()
 	_check(
 		deleted_result.ok and deleted_result.data.deleted,
@@ -471,11 +534,8 @@ func _test_cloud_save_cancellation(service: Node, test_config: GameServicesConfi
 		PendingCloudSaveProvider.new()
 	)
 	_check(initialized.ok, "Pending cloud-save provider initializes")
-	var document: CloudSaveDocument = service.cloud_saves.create(
-		"pending-slot",
-		{"coins": 1}
-	)
-	var request: GameServicesRequest = service.cloud_saves.save(document)
+	var pending_slot: CloudSaveSlot = service.cloud_saves.slot("pending-slot", {"coins": 1})
+	var request: GameServicesRequest = pending_slot.save(pending_slot.create({"coins": 1}))
 	service.shutdown()
 	var result: GameServicesResult = await request.wait()
 	_check(
@@ -579,9 +639,15 @@ func _merge_cloud_save_conflict(conflict: CloudSaveConflict) -> CloudSaveResolut
 			coins += int(candidate.document.value.get("coins", 0))
 	return CloudSaveResolution.merge(
 		{"coins": coins},
-		conflict.highest_progress(),
+		null,
 		{"progress_value": 100}
 	)
+
+
+func _validate_cloud_save_value(value: Variant) -> String:
+	if value is not Dictionary or not value.has("coins"):
+		return "Cloud-save values must be dictionaries containing coins"
+	return ""
 
 
 func _check(condition: bool, message: String) -> void:

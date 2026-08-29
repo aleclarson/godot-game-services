@@ -30,7 +30,8 @@ need platform branches throughout its gameplay code.
   features behave the same. Unsupported operations fail explicitly.
 - Save Godot values rather than manually encoding byte arrays. Typed cloud saves
   carry schema versions, revision ancestry, portable metadata, migrations, and
-  explicit conflict candidates.
+  explicit conflict candidates. Fixed slots can keep their own defaults,
+  validators, and conflict policy.
 
 The addon normalizes client code; it does not merge the two platform backends.
 Game Center and Play Games keep separate players, achievements, leaderboards,
@@ -95,28 +96,36 @@ An immediate validation failure is safe to await because
 `GameServicesRequest.wait()` first checks whether the request already
 completed.
 
-For cloud saves, use the higher-level store to serialize Godot values and keep
-revision metadata:
+For a fixed save slot, use a configured handle. It keeps the slot name and its
+schema settings out of gameplay code:
 
 ```gdscript
-var saves := GameServices.cloud_saves
-saves.schema_version = 2
-saves.add_migration(1, _migrate_save_v1)
-
-var loaded := await saves.load_or_create("campaign", {
+var campaign := GameServices.cloud_saves.slot("campaign", {
 	"level": 1,
 	"coins": 0,
-}).wait()
+})
+campaign.schema_version = 2
+campaign.add_migration(1, _migrate_save_v1)
+
+var loaded := await campaign.load_or_create().wait()
 if not loaded.ok:
 	push_warning(loaded.error_message)
 	return
 var document: CloudSaveDocument = loaded.data
 
 document.value.coins += 10
-var written := await saves.save(document).wait()
+var written := await campaign.save(document).wait()
 if written.ok:
 	document = written.data
 ```
+
+Use `GameServices.cloud_saves` directly when slot names are dynamic. Its
+`validate()` and `encoded_size()` methods can preflight a document without
+writing it.
+
+For a simple read-modify-write, `campaign.update(mutator)` combines those steps;
+the mutator runs once and a concurrent conflict is still returned for the game
+to resolve.
 
 Conflict resolution is manual by default. `CloudSaveConflict` exposes decoded
 candidates and helpers for choosing the newest or highest-progress copy;

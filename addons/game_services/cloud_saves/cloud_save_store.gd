@@ -18,15 +18,20 @@ const ALLOWED_SLOT_CHARACTERS := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRST
 const OP_SAVE := &"cloud_save_save"
 const OP_LOAD := &"cloud_save_load"
 const OP_LOAD_OR_CREATE := &"cloud_save_load_or_create"
+const OP_UPDATE := &"cloud_save_update"
 const OP_LIST := &"cloud_save_list"
+const OP_EXISTS := &"cloud_save_exists"
 const OP_DELETE := &"cloud_save_delete"
 const OP_RESOLVE := &"cloud_save_resolve"
+const OP_VALIDATE := &"cloud_save_validate"
+const OP_ENCODED_SIZE := &"cloud_save_encoded_size"
 
 var schema_version: int = 1:
 	set(value):
 		schema_version = maxi(value, 1)
 var conflict_policy: ConflictPolicy = ConflictPolicy.MANUAL
 var conflict_resolver: Callable
+var validator: Callable
 var max_conflict_attempts: int = 3:
 	set(value):
 		max_conflict_attempts = maxi(value, 1)
@@ -34,6 +39,8 @@ var max_conflict_attempts: int = 3:
 var _game_services: Node
 var _migrations: Dictionary[int, Callable] = {}
 var _active_requests: Dictionary[int, GameServicesRequest] = {}
+var _slot_stores: Array[CloudSaveStore] = []
+var _slots: Dictionary[String, CloudSaveSlot] = {}
 var _crypto := Crypto.new()
 
 
@@ -59,6 +66,27 @@ func clear_migrations() -> void:
 	_migrations.clear()
 
 
+## Return a configured handle for one logical slot.
+##
+## The handle starts with this store's current policy, then owns its schema,
+## migrations, validator, default value, and conflict policy independently.
+## Repeated calls for the same slot return the same handle.
+func slot(slot_name: String, default_value: Variant = null) -> CloudSaveSlot:
+	if _slots.has(slot_name):
+		return _slots[slot_name]
+	var scoped_store := CloudSaveStore.new(_game_services)
+	scoped_store.schema_version = schema_version
+	scoped_store.conflict_policy = conflict_policy
+	scoped_store.conflict_resolver = conflict_resolver
+	scoped_store.validator = validator
+	scoped_store.max_conflict_attempts = max_conflict_attempts
+	scoped_store._migrations = _migrations.duplicate()
+	_slot_stores.append(scoped_store)
+	var scoped_slot := CloudSaveSlot.new(scoped_store, slot_name, default_value)
+	_slots[slot_name] = scoped_slot
+	return scoped_slot
+
+
 func create(slot: String, value: Variant, metadata: Dictionary = {}) -> CloudSaveDocument:
 	var document := CloudSaveDocument.new()
 	document.slot = slot
@@ -77,6 +105,55 @@ func load(slot: String) -> GameServicesRequest:
 func load_or_create(slot: String, default_value: Variant) -> GameServicesRequest:
 	var target := _new_request(OP_LOAD_OR_CREATE)
 	_start_load(target, slot, true, default_value)
+	return target
+
+
+## Load a document, invoke [param mutator] once, and save it as a new revision.
+## A provider conflict is returned to the caller; the mutator is never retried
+## automatically.
+func update(
+	slot: String,
+	default_value: Variant,
+	mutator: Callable,
+	metadata: Dictionary = {}
+) -> GameServicesRequest:
+	var target := _new_request(OP_UPDATE)
+	if not _valid_slot(slot):
+		_complete_local_failure(
+			target,
+			GameServicesResult.Code.INVALID_ARGUMENT,
+			"Cloud-save slots must contain 1-100 URL-safe characters"
+		)
+		return target
+	if not mutator.is_valid():
+		_complete_local_failure(
+			target,
+			GameServicesResult.Code.INVALID_ARGUMENT,
+			"A cloud-save update mutator is required"
+		)
+		return target
+	var source := _transport(&"_cloud_save_load_transport", [slot])
+	_bind(source, Callable(self, "_on_update_loaded").bind(
+		target,
+		slot,
+		default_value,
+		mutator,
+		metadata
+	))
+	return target
+
+
+func exists(slot: String) -> GameServicesRequest:
+	var target := _new_request(OP_EXISTS)
+	if not _valid_slot(slot):
+		_complete_local_failure(
+			target,
+			GameServicesResult.Code.INVALID_ARGUMENT,
+			"Cloud-save slots must contain 1-100 URL-safe characters"
+		)
+		return target
+	var source := _transport(&"_cloud_save_list_transport", [true])
+	_bind(source, Callable(self, "_on_exists_listed").bind(target, slot))
 	return target
 
 
@@ -157,10 +234,25 @@ func resolve_with_candidate(
 func resolve_with_value(
 	conflict: CloudSaveConflict,
 	value: Variant,
-	base: CloudSaveCandidate,
+	base: CloudSaveCandidate = null,
 	metadata: Dictionary = {}
 ) -> GameServicesRequest:
 	return resolve(conflict, CloudSaveResolution.merge(value, base, metadata))
+
+
+func validate(document: CloudSaveDocument) -> GameServicesResult:
+	return _inspect_document(document, OP_VALIDATE)
+
+
+func encoded_size(document: CloudSaveDocument) -> GameServicesResult:
+	var inspected := _inspect_document(document, OP_ENCODED_SIZE)
+	if not inspected.ok:
+		return inspected
+	return GameServicesResult.success(
+		OP_ENCODED_SIZE,
+		int(inspected.data.get("encoded_size", -1)),
+		inspected.provider
+	)
 
 
 func _start_load(
@@ -199,13 +291,18 @@ func _on_load_completed(
 			))
 		return
 	if result.error_code == GameServicesResult.Code.NOT_FOUND and use_default:
-		var cloned_default := _clone_value(default_value, target.operation)
-		if cloned_default is GameServicesResult:
-			target.complete(cloned_default)
+		var default_document := _default_document(
+			slot,
+			default_value,
+			target.operation,
+			result.provider
+		)
+		if default_document is GameServicesResult:
+			target.complete(default_document)
 			return
 		target.complete(GameServicesResult.success(
 			target.operation,
-			create(slot, cloned_default),
+			default_document,
 			result.provider
 		))
 		return
@@ -213,6 +310,75 @@ func _on_load_completed(
 		_handle_conflict(result, target, slot, null, 0)
 		return
 	target.complete(_copy_failure(result, target.operation))
+
+
+func _default_document(
+	slot: String,
+	default_value: Variant,
+	operation: StringName,
+	provider: StringName
+) -> Variant:
+	var cloned_default := _clone_value(default_value, operation)
+	if cloned_default is GameServicesResult:
+		return cloned_default
+	var default_document := create(slot, cloned_default)
+	var validation_failure := _validate_document_value(
+		default_document,
+		operation,
+		provider,
+		GameServicesResult.Code.INVALID_ARGUMENT
+	)
+	if validation_failure != null:
+		return validation_failure
+	return default_document
+
+
+func _on_update_loaded(
+	result: GameServicesResult,
+	target: GameServicesRequest,
+	slot: String,
+	default_value: Variant,
+	mutator: Callable,
+	metadata: Dictionary
+) -> void:
+	if target.is_completed:
+		return
+	var document: Variant
+	if result.ok:
+		document = _document_from_transport_result(result, target.operation, slot)
+	elif result.error_code == GameServicesResult.Code.NOT_FOUND:
+		document = _default_document(slot, default_value, target.operation, result.provider)
+	elif result.error_code == GameServicesResult.Code.CONFLICT:
+		_handle_conflict(result, target, slot, null, 0)
+		return
+	else:
+		target.complete(_copy_failure(result, target.operation))
+		return
+	if document is GameServicesResult:
+		target.complete(document)
+		return
+	var updated_document: CloudSaveDocument = document
+	var returned: Variant = mutator.call(updated_document)
+	if returned is CloudSaveDocument:
+		updated_document = returned
+	if updated_document.slot != slot:
+		_complete_local_failure(
+			target,
+			GameServicesResult.Code.INVALID_ARGUMENT,
+			"A cloud-save update mutator cannot change the slot"
+		)
+		return
+	_apply_input_metadata(updated_document, metadata)
+	var validation_failure := _validate_document_value(
+		updated_document,
+		target.operation,
+		result.provider,
+		GameServicesResult.Code.INVALID_ARGUMENT
+	)
+	if validation_failure != null:
+		target.complete(validation_failure)
+		return
+	_start_save(target, updated_document)
 
 
 func _start_save(target: GameServicesRequest, source_document: CloudSaveDocument) -> void:
@@ -281,6 +447,31 @@ func _on_list_completed(result: GameServicesResult, target: GameServicesRequest)
 		if value is Dictionary:
 			saves.append(_info_from_metadata(value))
 	target.complete(GameServicesResult.success(target.operation, saves, result.provider))
+
+
+func _on_exists_listed(
+	result: GameServicesResult,
+	target: GameServicesRequest,
+	slot: String
+) -> void:
+	if target.is_completed:
+		return
+	if not result.ok:
+		target.complete(_copy_failure(result, target.operation))
+		return
+	if result.data is not Array:
+		target.complete(_invalid_data(
+			target.operation,
+			"The provider returned an invalid cloud-save list",
+			result.provider
+		))
+		return
+	var found := false
+	for value: Variant in result.data:
+		if value is Dictionary and str(value.get("name", "")) == slot:
+			found = true
+			break
+	target.complete(GameServicesResult.success(target.operation, found, result.provider))
 
 
 func _on_delete_listed(
@@ -394,7 +585,7 @@ func _start_resolution(
 ) -> void:
 	if target.is_completed:
 		return
-	var base := resolution.candidate
+	var base := resolution.candidate if resolution.candidate != null else conflict.newest()
 	if base == null or not base.is_decoded() or not conflict.candidates.has(base):
 		_complete_local_failure(
 			target,
@@ -475,11 +666,11 @@ func _prepare_document(
 	parents: PackedStringArray,
 	operation: StringName
 ) -> Variant:
-	if source.slot.is_empty():
+	if not _valid_slot(source.slot):
 		return GameServicesResult.failure(
 			operation,
 			GameServicesResult.Code.INVALID_ARGUMENT,
-			"A cloud-save slot is required",
+			"Cloud-save slots must contain 1-100 URL-safe characters",
 			_provider_name()
 		)
 	var document := source.duplicate_document()
@@ -491,6 +682,14 @@ func _prepare_document(
 	if migrated is GameServicesResult:
 		return migrated
 	document = migrated
+	var validation_failure := _validate_document_value(
+		document,
+		operation,
+		_provider_name(),
+		GameServicesResult.Code.INVALID_ARGUMENT
+	)
+	if validation_failure != null:
+		return validation_failure
 	document.schema_version = maxi(schema_version, 1)
 	document.revision = _new_revision()
 	document.parent_revisions = parents.duplicate()
@@ -517,6 +716,70 @@ func _clone_value(value: Variant, operation: StringName) -> Variant:
 			_provider_name()
 		)
 	return bytes_to_var(encoded)
+
+
+func _validator_error(value: Variant) -> String:
+	if not validator.is_valid():
+		return ""
+	var validation: Variant = validator.call(value)
+	if validation is GameServicesResult:
+		return "" if validation.ok else validation.error_message
+	if validation is String:
+		return validation
+	if validation is bool and not validation:
+		return "The cloud-save value failed validation"
+	return ""
+
+
+func _validate_document_value(
+	document: CloudSaveDocument,
+	operation: StringName,
+	provider: StringName,
+	code: GameServicesResult.Code
+) -> GameServicesResult:
+	var validation_error := _serialization_error(document.value)
+	if validation_error.is_empty():
+		validation_error = _validator_error(document.value)
+	if validation_error.is_empty():
+		return null
+	return GameServicesResult.failure(
+		operation,
+		code,
+		validation_error,
+		provider
+	)
+
+
+func _inspect_document(document: CloudSaveDocument, operation: StringName) -> GameServicesResult:
+	if document == null:
+		return GameServicesResult.failure(
+			operation,
+			GameServicesResult.Code.INVALID_ARGUMENT,
+			"A cloud-save document is required",
+			_provider_name()
+		)
+	var parents := PackedStringArray()
+	if not document.revision.is_empty():
+		parents.append(document.revision)
+	var prepared := _prepare_document(document, parents, operation)
+	if prepared is GameServicesResult:
+		return prepared
+	var prepared_document: CloudSaveDocument = prepared
+	var encoded := _encode_document(prepared_document, operation)
+	if encoded is GameServicesResult:
+		return encoded
+	var stable := _decode_document(
+		encoded,
+		operation,
+		_provider_name(),
+		prepared_document.slot
+	)
+	if stable is GameServicesResult:
+		return stable
+	return GameServicesResult.success(operation, {
+		"document": stable,
+		"encoded_size": encoded.size(),
+	}, _provider_name())
 
 
 func _serialization_error(value: Variant, depth: int = 0) -> String:
@@ -644,7 +907,19 @@ func _decode_document(
 	_apply_input_metadata(document, metadata)
 	if document.revision.is_empty():
 		return _invalid_data(operation, "The cloud save has no revision identifier", provider)
-	return _migrate_document(document, operation, provider)
+	var migrated := _migrate_document(document, operation, provider)
+	if migrated is GameServicesResult:
+		return migrated
+	document = migrated
+	var validation_failure := _validate_document_value(
+		document,
+		operation,
+		provider,
+		GameServicesResult.Code.INVALID_DATA
+	)
+	if validation_failure != null:
+		return validation_failure
+	return document
 
 
 func _migrate_document(
@@ -870,6 +1145,16 @@ func _complete_local_failure(
 	))
 
 
+func _local_failure_request(
+	operation: StringName,
+	code: GameServicesResult.Code,
+	message: String
+) -> GameServicesRequest:
+	var target := _new_request(operation)
+	_complete_local_failure(target, code, message)
+	return target
+
+
 func _transport(method: StringName, arguments: Array) -> GameServicesRequest:
 	if not is_instance_valid(_game_services) or not _game_services.has_method(method):
 		var unavailable := GameServicesRequest.new(method)
@@ -924,6 +1209,8 @@ func _valid_slot(slot: String) -> bool:
 
 
 func _cancel_pending_requests(cancelled_provider: StringName) -> void:
+	for scoped_store in _slot_stores:
+		scoped_store._cancel_pending_requests(cancelled_provider)
 	var requests := _active_requests.values()
 	for value: Variant in requests:
 		var request := value as GameServicesRequest
