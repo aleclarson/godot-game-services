@@ -2,3 +2,12 @@
 *.tmp
 *.translation
 export_presets.cfg
+/android/
+/native/android/.gradle/
+/native/android/build/
+/native/android/plugin/build/
+/native/android/local.properties
+/native/ios/build/
+/native/ios/.sconsign.dblite
+/native/ios/gamecenter/*.d
+/native/ios/gamecenter/*.o

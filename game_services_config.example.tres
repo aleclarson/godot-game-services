@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="GameServicesConfig" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/game_services/game_services_config.gd" id="1_config"]
+
+[resource]
+script = ExtResource("1_config")
+use_mock_in_editor = true
+request_timeout_seconds = 30.0
+apple_achievement_ids = {
+"first_win": "com.example.game.first-win"
+}
+apple_leaderboard_ids = {
+"high_score": "com.example.game.high-score"
+}
+google_achievement_ids = {
+"first_win": "CgkI_REPLACE_ME"
+}
+google_achievement_steps = {
+"first_win": 1
+}
+google_leaderboard_ids = {
+"high_score": "CgkI_REPLACE_ME"
+}
+google_server_client_id = ""
+mock_player_id = "mock-player"
+mock_player_display_name = "Mock Player"

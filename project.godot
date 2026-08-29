@@ -1,0 +1,25 @@
+; This project exists for the example and headless package tests.
+config_version=5
+
+[application]
+
+config/name="Godot Game Services"
+run/main_scene="res://example/main.tscn"
+
+[autoload]
+
+GameServices="*res://addons/game_services/game_services.gd"
+
+[display]
+
+window/size/viewport_width=960
+window/size/viewport_height=540
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/game_services/plugin.cfg")

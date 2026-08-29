@@ -1,61 +1,117 @@
 # Godot Game Services
 
-An exploration of a normalized Godot 4 interface for Apple Game Center and
-Google Play Games Services.
+A normalized Godot 4 API for Apple Game Center and Google Play Games
+Services.
 
-## Status
+> [!WARNING]
+> This is a development preview targeting Godot 4.7.2. The scripts, Android
+> bridge, and iOS bridge build successfully, but real-device flows still need
+> validation against games configured in App Store Connect and Play Console.
 
-Feasibility research. There is no stable API or distributable plugin yet.
+## What it provides
 
-## Direction
+- one `GameServices` autoload on iOS, Android, and desktop
+- logical achievement and leaderboard IDs mapped to each platform
+- request objects that make concurrent asynchronous operations attributable
+- portable success and error results with native details preserved
+- runtime capability checks for features without true platform parity
+- named binary cloud saves with explicit conflict results and resolution
+- a stateful mock provider for editor development and automated tests
+- bundled Android AARs and iOS XCFrameworks, with their buildable source forks
 
-The plugin should expose the shared capabilities of both services through one
-GDScript-facing API while keeping platform-specific code behind native iOS and
-Android adapters. Features that cannot be normalized cleanly should remain
-explicit rather than being hidden behind misleading parity.
+The API covers authentication, player profiles, achievements, leaderboards,
+platform UI, server credentials, and cloud saves. See the
+[feasibility research](docs/research.md) for the semantic differences the API
+deliberately does not conceal.
 
-The initial common surface to investigate is:
+## Installation
 
-- authentication and player identity
-- achievements
-- leaderboards and score submission
-- platform UI overlays
-- saved-game support and conflict handling
-- lifecycle, error, and offline behavior
-
-A possible shape for the public API is:
-
-```gdscript
-GameServices.sign_in()
-GameServices.unlock_achievement("first_win")
-GameServices.submit_score("high_score", 42_000)
-GameServices.show_leaderboards()
-```
-
-Game-specific identifiers would be mapped to the corresponding Game Center and
-Play Games identifiers in configuration rather than branching throughout game
-code.
-
-## Questions to answer
-
-1. Which capabilities have genuinely compatible semantics on both platforms?
-2. Which Godot native-plugin and export mechanisms provide the cleanest install
-   and release workflow?
-3. How should authentication, cancellation, offline operation, and app lifecycle
-   events be represented consistently?
-4. Where are platform-specific escape hatches necessary?
-5. Can most of the GDScript-facing behavior be tested without live platform
-   services?
-
-## Likely architecture
+Copy both of these directories into the same paths in a Godot project:
 
 ```text
-Game code
-    -> normalized GDScript API
-        -> Apple Game Center adapter (iOS)
-        -> Google Play Games Services adapter (Android)
-        -> mock adapter (editor and tests)
+addons/game_services
+ios/plugins/game_services
 ```
 
-The next step is a capability matrix based on the current native SDKs and the
-state of existing Godot integrations.
+Enable **Game Services** in **Project > Project Settings > Plugins**. This
+installs the `GameServices` autoload and registers the bundled Android export
+plugin.
+
+The native binaries target Godot 4.7.2 exactly. Rebuild them from `native/` for
+another Godot version; native Godot plugins are not assumed to be ABI-compatible
+between releases.
+
+Complete the platform-console and export configuration in
+[Platform setup](docs/setup.md) before testing on a device.
+
+## Quick start
+
+Copy `game_services_config.example.tres` to
+`res://game_services_config.tres`, then replace the platform IDs:
+
+```text
+[gd_resource type="Resource" script_class="GameServicesConfig" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/game_services/game_services_config.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+apple_achievement_ids = {"first_win": "com.example.first-win"}
+google_achievement_ids = {"first_win": "CgkI..."}
+google_achievement_steps = {"first_win": 1}
+apple_leaderboard_ids = {"high_score": "com.example.high-score"}
+google_leaderboard_ids = {"high_score": "CgkI..."}
+```
+
+Use only logical IDs in game code:
+
+```gdscript
+var auth := await GameServices.authenticate().wait()
+if not auth.ok:
+	push_warning(auth.error_message)
+	return
+
+var achievement := await GameServices.unlock_achievement("first_win").wait()
+var score := await GameServices.submit_score("high_score", 42_000).wait()
+```
+
+An immediate validation failure is safe to await because
+`GameServicesRequest.wait()` first checks whether the request already
+completed.
+
+See the [API contract](docs/api.md) for operations, result shapes, and cloud-save
+conflict handling.
+
+## Capability checks
+
+Do not infer support from the operating system:
+
+```gdscript
+if GameServices.supports(GameServices.Capability.CLOUD_SAVES):
+	var saves := await GameServices.list_saved_games().wait()
+```
+
+Unsupported operations return `GameServicesResult.Code.UNSUPPORTED`; missing
+native plugins return `UNAVAILABLE`; missing logical ID mappings return
+`NOT_CONFIGURED`.
+
+## Development
+
+Open the repository as a Godot project to run the interactive mock-provider
+example, or run the automated validation:
+
+```bash
+./scripts/test.sh
+./scripts/validate_package.sh
+```
+
+Rebuild native artifacts with `native/android/build.sh` and
+`native/ios/build.sh`. The iOS script requires `GODOT_SOURCE_DIR` to point to an
+exact matching Godot source checkout with generated headers.
+
+Architecture and API rationale live in [docs/architecture.md](docs/architecture.md).
+
+## License
+
+[MIT](LICENSE). The native forks and bundled artifacts retain their upstream
+MIT notices; see [third-party notices](THIRD_PARTY_NOTICES.md).
