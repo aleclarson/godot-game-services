@@ -28,7 +28,9 @@ need platform branches throughout its gameplay code.
   XCFramework.
 - Detect support at runtime instead of assuming similarly named platform
   features behave the same. Unsupported operations fail explicitly.
-- Handle cloud-save conflicts in game code instead of silently choosing a copy.
+- Save Godot values rather than manually encoding byte arrays. Typed cloud saves
+  carry schema versions, revision ancestry, portable metadata, migrations, and
+  explicit conflict candidates.
 
 The addon normalizes client code; it does not merge the two platform backends.
 Game Center and Play Games keep separate players, achievements, leaderboards,
@@ -92,6 +94,33 @@ var score := await GameServices.submit_score("high_score", 42_000).wait()
 An immediate validation failure is safe to await because
 `GameServicesRequest.wait()` first checks whether the request already
 completed.
+
+For cloud saves, use the higher-level store to serialize Godot values and keep
+revision metadata:
+
+```gdscript
+var saves := GameServices.cloud_saves
+saves.schema_version = 2
+saves.add_migration(1, _migrate_save_v1)
+
+var loaded := await saves.load_or_create("campaign", {
+	"level": 1,
+	"coins": 0,
+}).wait()
+if not loaded.ok:
+	push_warning(loaded.error_message)
+	return
+var document: CloudSaveDocument = loaded.data
+
+document.value.coins += 10
+var written := await saves.save(document).wait()
+if written.ok:
+	document = written.data
+```
+
+Conflict resolution is manual by default. `CloudSaveConflict` exposes decoded
+candidates and helpers for choosing the newest or highest-progress copy;
+automatic policies require explicit opt-in.
 
 See the [API contract](docs/api.md) for operations, result shapes, and cloud-save
 conflict handling.

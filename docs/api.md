@@ -29,7 +29,8 @@ owned the request.
 | Leaderboards | `submit_score(id, score)`, `show_leaderboards(id)` |
 | Platform UI | `show_achievements()`, `show_leaderboards()` |
 | Server verification | `request_server_credentials(options)` |
-| Cloud saves | `save_game(name, data, metadata)`, `load_game(name)`, `list_saved_games()`, `delete_saved_game(id)`, `resolve_saved_game_conflict(...)` |
+| Typed cloud saves | `cloud_saves.create()`, `load()`, `load_or_create()`, `save()`, `list()`, `delete()`, and conflict resolution methods |
+| Raw cloud saves | `save_game(name, data, metadata)`, `load_game(name)`, `list_saved_games()`, `delete_saved_game(id)`, `resolve_saved_game_conflict(...)` |
 
 Achievement and leaderboard methods accept game-owned logical IDs. Their Apple
 and Google identifiers live in `GameServicesConfig`. Google incremental
@@ -41,7 +42,114 @@ Server credentials intentionally remain discriminated values. Apple returns
 returns `kind = "play_games_server_auth_code"` with a one-time authorization
 code.
 
-## Cloud saves
+## Typed cloud saves
+
+`GameServices.cloud_saves` is a `CloudSaveStore` layered over the provider's
+binary save transport. It safely serializes Godot Variant values, attaches a
+versioned envelope, and returns typed documents:
+
+```gdscript
+var saves := GameServices.cloud_saves
+saves.schema_version = 2
+
+var loaded := await saves.load_or_create("campaign", {
+	"level": 1,
+	"coins": 0,
+}).wait()
+if not loaded.ok:
+	push_warning(loaded.error_message)
+	return
+
+var document: CloudSaveDocument = loaded.data
+document.value.coins += 10
+
+var written := await saves.save(document).wait()
+if written.ok:
+	document = written.data
+```
+
+`create()` returns an unsaved document. `save()` does not mutate its input; on
+success, its result contains a new `CloudSaveDocument` with a new random
+revision. Saving a previously loaded document records that revision as its
+parent.
+
+Documents expose:
+
+- `slot` and decoded `value`
+- `schema_version`, `revision`, `parent_revisions`, and `needs_save`
+- `description`, `played_time_msec`, `progress_value`, and `custom_metadata`
+- provider summary fields such as `provider_id`, `updated_at_msec`, and
+  `device_name`
+
+The envelope uses Godot's object-free Variant byte encoding. Dictionaries,
+arrays, packed arrays, vectors, colors, transforms, and other value types retain
+their Godot types. Objects and unsupported values fail with `INVALID_ARGUMENT`
+instead of enabling object reconstruction.
+
+### Schema migrations
+
+Register one migration for each version step:
+
+```gdscript
+saves.schema_version = 3
+saves.add_migration(1, _migrate_v1_to_v2)
+saves.add_migration(2, _migrate_v2_to_v3)
+
+func _migrate_v1_to_v2(value: Variant) -> Variant:
+	value["difficulty"] = "normal"
+	return value
+```
+
+The store applies migrations in memory while loading. A migrated document has
+`needs_save = true`; the store never writes it back implicitly. A missing
+migration, malformed envelope, foreign binary save, or save from a newer schema
+returns `INVALID_DATA` without overwriting the provider copy.
+
+### Conflicts
+
+Manual resolution is the default. A conflicting `load()` or `save()` returns
+`Code.CONFLICT` with a `CloudSaveConflict` in `result.data`. Each
+`CloudSaveCandidate` contains the decoded document, provider snapshot ID, and
+provider modification time:
+
+```gdscript
+var loaded := await saves.load("campaign").wait()
+if loaded.error_code == GameServicesResult.Code.CONFLICT:
+	var conflict: CloudSaveConflict = loaded.data
+	var chosen := conflict.highest_progress()
+	var resolved := await saves.resolve_with_candidate(conflict, chosen).wait()
+```
+
+Merged values identify a provider candidate as the resolution base because
+Google requires its snapshot ID:
+
+```gdscript
+await saves.resolve_with_value(
+	conflict,
+	merge_game_states(conflict.candidates),
+	conflict.newest(),
+	{"progress_value": 80}
+).wait()
+```
+
+A resolved document receives a new revision whose parents include every decoded
+candidate revision. Explicit automatic policies are `NEWEST`,
+`HIGHEST_PROGRESS`, and `CUSTOM`; `CUSTOM` may return a `CloudSaveResolution` or
+a candidate. Repeated conflicts stop after `max_conflict_attempts` and return to
+manual resolution.
+
+### Listing and deletion
+
+`list()` returns `Array[CloudSaveInfo]`. Provider summaries always identify the
+logical slot and provider record, but cannot expose every value stored inside
+the portable envelope. In particular, GameKit does not expose the embedded
+custom metadata without loading each save. Use `load()` when complete metadata
+is required.
+
+`delete(slot)` resolves the provider record internally, so game code does not
+need Google's snapshot ID. A missing logical slot returns `NOT_FOUND`.
+
+## Raw binary cloud saves
 
 Save names use a deliberately portable subset: 1–100 characters from
 `A-Z`, `a-z`, `0-9`, `-`, `.`, `_`, and `~`. Save data is a
@@ -89,5 +197,6 @@ as part of `SnapshotsClient.resolveConflict`.
 
 The stable portable codes are `OK`, `UNAVAILABLE`, `UNSUPPORTED`,
 `NOT_AUTHENTICATED`, `INVALID_ARGUMENT`, `NOT_CONFIGURED`, `PLATFORM_ERROR`,
-`CANCELLED`, `CONFLICT`, `NOT_FOUND`, and `INTERNAL_ERROR`. Native error details
-remain available through `platform_code` and provider `raw` data when supplied.
+`CANCELLED`, `CONFLICT`, `NOT_FOUND`, `INTERNAL_ERROR`, and `INVALID_DATA`.
+Native error details remain available through `platform_code` and provider
+`raw` data when supplied.

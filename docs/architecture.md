@@ -21,6 +21,8 @@ failures cannot race past an `await` connection.
 
 ```text
 Game code
+    -> CloudSaveStore (typed values, schema migration, revisions, conflicts)
+        -> GameServices raw cloud-save transport
     -> GameServices (logical IDs, validation, result normalization)
         -> AppleGameCenterProvider -> native GameCenter singleton
         -> GooglePlayGamesProvider -> native GodotPlayGameServices singleton
@@ -55,12 +57,30 @@ theoretically support.
 
 Portable errors use a small stable code set: unavailable, unsupported, not
 authenticated, invalid argument, not configured, platform error, cancelled,
-conflict, not found, and internal error. The original platform code and native
-payload are preserved separately when available.
+conflict, not found, internal error, and invalid data. The original platform
+code and native payload are preserved separately when available.
 
 The facade owns request lifetime. It tracks unfinished requests and completes
 them as cancelled before shutting down or replacing their provider, so callers
 do not remain suspended until a stale timeout after a lifecycle transition.
+
+`CloudSaveStore` owns its higher-level requests while the facade silently tracks
+the underlying provider requests for timeouts and shutdown. This prevents
+internal transport operations from appearing as game-initiated
+`GameServices.request_finished` events. The store has its own
+`request_finished` signal.
+
+## Typed cloud-save envelope
+
+The high-level store serializes an object-free Godot Variant envelope containing
+the logical slot, format and game schema versions, a random revision, parent
+revisions, portable metadata, and the game value. Provider metadata remains
+outside that envelope and is attached to the decoded `CloudSaveDocument`.
+
+Schema migration is deliberately read-only: loading may upgrade the in-memory
+document and mark it dirty, but only an explicit `save()` writes a new revision.
+Likewise, conflict resolution is manual unless the game opts into a named or
+custom policy. These boundaries avoid hidden writes and silent data loss.
 
 ## Native packaging boundary
 

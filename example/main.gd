@@ -58,15 +58,25 @@ func _submit_score() -> void:
 
 
 func _save_and_load() -> void:
-	var save := await GameServices.save_game(
+	var document := GameServices.cloud_saves.create(
 		"example-slot",
-		"Hello from Godot Game Services".to_utf8_buffer(),
+		{"message": "Hello from Godot Game Services", "visits": 1},
 		{"description": "Example save"}
-	).wait()
+	)
+	var save := await GameServices.cloud_saves.save(document).wait()
 	if not save.ok:
 		_show_result(save)
 		return
-	_show_result(await GameServices.load_game("example-slot").wait())
+	var loaded := await GameServices.cloud_saves.load("example-slot").wait()
+	if not loaded.ok:
+		_show_result(loaded)
+		return
+	var loaded_document: CloudSaveDocument = loaded.data
+	_output.text = JSON.stringify({
+		"slot": loaded_document.slot,
+		"revision": loaded_document.revision,
+		"value": loaded_document.value,
+	}, "  ")
 
 
 func _show_result(result: GameServicesResult) -> void:

@@ -23,8 +23,14 @@ const ALLOWED_SAVE_NAME_CHARACTERS := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO
 var auto_initialize: bool = true
 var config: GameServicesConfig
 var provider: GameServicesProvider
+var cloud_saves: CloudSaveStore
 var _provider_available: bool = false
 var _active_requests: Dictionary[int, GameServicesRequest] = {}
+var _request_notifications: Dictionary[int, bool] = {}
+
+
+func _init() -> void:
+	cloud_saves = CloudSaveStore.new(self)
 
 
 func _ready() -> void:
@@ -48,6 +54,7 @@ func initialize(
 
 
 func shutdown() -> void:
+	cloud_saves._cancel_pending_requests(provider_name())
 	_cancel_pending_requests(provider_name())
 	_provider_available = false
 	if not is_instance_valid(provider):
@@ -231,6 +238,74 @@ func resolve_saved_game_conflict(
 	))
 
 
+func _cloud_save_save_transport(
+	name: String,
+	data: PackedByteArray,
+	metadata: Dictionary = {}
+) -> GameServicesRequest:
+	if not _valid_save_name(name):
+		return _silent_failure_request(
+			&"save_game",
+			GameServicesResult.Code.INVALID_ARGUMENT,
+			"Save names must contain 1-100 URL-safe characters: A-Z, a-z, 0-9, -, ., _, or ~"
+		)
+	if not _has_provider():
+		return _silent_unavailable_request(&"save_game")
+	return _track(provider.save_game(name, data, metadata), false)
+
+
+func _cloud_save_load_transport(name: String) -> GameServicesRequest:
+	if not _valid_save_name(name):
+		return _silent_failure_request(
+			&"load_game",
+			GameServicesResult.Code.INVALID_ARGUMENT,
+			"Save names must contain 1-100 URL-safe characters: A-Z, a-z, 0-9, -, ., _, or ~"
+		)
+	if not _has_provider():
+		return _silent_unavailable_request(&"load_game")
+	return _track(provider.load_game(name), false)
+
+
+func _cloud_save_list_transport(force_reload: bool = false) -> GameServicesRequest:
+	if not _has_provider():
+		return _silent_unavailable_request(&"list_saved_games")
+	return _track(provider.list_saved_games(force_reload), false)
+
+
+func _cloud_save_delete_transport(id: String) -> GameServicesRequest:
+	if id.is_empty():
+		return _silent_failure_request(
+			&"delete_saved_game",
+			GameServicesResult.Code.INVALID_ARGUMENT,
+			"A saved-game ID is required"
+		)
+	if not _has_provider():
+		return _silent_unavailable_request(&"delete_saved_game")
+	return _track(provider.delete_saved_game(id), false)
+
+
+func _cloud_save_resolve_transport(
+	conflict_id: String,
+	snapshot_id: String,
+	data: PackedByteArray,
+	metadata: Dictionary = {}
+) -> GameServicesRequest:
+	if conflict_id.is_empty():
+		return _silent_failure_request(
+			&"resolve_saved_game_conflict",
+			GameServicesResult.Code.INVALID_ARGUMENT,
+			"A cloud-save conflict ID is required"
+		)
+	if not _has_provider():
+		return _silent_unavailable_request(&"resolve_saved_game_conflict")
+	return _track(provider.resolve_saved_game_conflict(
+		conflict_id,
+		snapshot_id,
+		data,
+		metadata
+	), false)
+
+
 func _load_default_config() -> GameServicesConfig:
 	if ResourceLoader.exists(DEFAULT_CONFIG_PATH):
 		var loaded := load(DEFAULT_CONFIG_PATH)
@@ -352,11 +427,16 @@ func _finish_proxy_request(
 	target.complete(transform.call(result))
 
 
-func _track(request: GameServicesRequest) -> GameServicesRequest:
+func _track(
+	request: GameServicesRequest,
+	emit_finished: bool = true
+) -> GameServicesRequest:
 	if request.is_completed:
-		call_deferred("_emit_request_finished", request, request.result)
+		if emit_finished:
+			call_deferred("_emit_request_finished", request, request.result)
 	else:
 		_active_requests[request.id] = request
+		_request_notifications[request.id] = emit_finished
 		request.completed.connect(
 			Callable(self, "_on_request_completed").bind(request),
 			CONNECT_ONE_SHOT
@@ -367,8 +447,11 @@ func _track(request: GameServicesRequest) -> GameServicesRequest:
 
 
 func _on_request_completed(result: GameServicesResult, request: GameServicesRequest) -> void:
+	var emit_finished := bool(_request_notifications.get(request.id, true))
 	_active_requests.erase(request.id)
-	request_finished.emit(request, result)
+	_request_notifications.erase(request.id)
+	if emit_finished:
+		request_finished.emit(request, result)
 
 
 func _emit_request_finished(request: GameServicesRequest, result: GameServicesResult) -> void:
@@ -399,6 +482,7 @@ func _cancel_pending_requests(cancelled_provider: StringName) -> void:
 			cancelled_provider
 		))
 	_active_requests.clear()
+	_request_notifications.clear()
 
 
 func _on_authentication_changed(authenticated: bool, player: Dictionary) -> void:
@@ -436,6 +520,29 @@ func _not_configured_request(operation: StringName, message: String) -> GameServ
 		provider_name()
 	))
 	return _track(request)
+
+
+func _silent_unavailable_request(operation: StringName) -> GameServicesRequest:
+	return _silent_failure_request(
+		operation,
+		GameServicesResult.Code.UNAVAILABLE,
+		"Game services have not been initialized"
+	)
+
+
+func _silent_failure_request(
+	operation: StringName,
+	code: GameServicesResult.Code,
+	message: String
+) -> GameServicesRequest:
+	var request := GameServicesRequest.new(operation)
+	request.complete(GameServicesResult.failure(
+		operation,
+		code,
+		message,
+		provider_name()
+	))
+	return _track(request, false)
 
 
 func _valid_save_name(name: String) -> bool:

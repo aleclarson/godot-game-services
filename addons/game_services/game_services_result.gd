@@ -15,6 +15,7 @@ enum Code {
 	CONFLICT = 8,
 	NOT_FOUND = 9,
 	INTERNAL_ERROR = 10,
+	INVALID_DATA = 11,
 }
 
 var ok: bool = false
