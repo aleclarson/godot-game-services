@@ -15,6 +15,11 @@ else:
 `error_message`, `platform_code`, and `provider`. Use `to_dictionary()` when a
 serializable representation is useful.
 
+Calling `shutdown()` completes every unfinished request with `Code.CANCELLED`.
+`initialize()` first shuts down the current provider, so replacing a provider
+has the same behavior. The cancellation result retains the provider name that
+owned the request.
+
 ## Operations
 
 | Area | Methods |

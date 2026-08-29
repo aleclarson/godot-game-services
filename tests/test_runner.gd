@@ -22,6 +22,19 @@ class UnavailableProvider extends GameServicesProvider:
 		)
 
 
+class PendingProvider extends GameServicesProvider:
+	func provider_name() -> StringName:
+		return &"pending_test"
+
+
+	func capabilities() -> int:
+		return Capability.AUTHENTICATION
+
+
+	func authenticate() -> GameServicesRequest:
+		return _new_request(&"authenticate")
+
+
 func _init() -> void:
 	call_deferred("_run")
 
@@ -30,6 +43,11 @@ func _run() -> void:
 	var service := GameServicesScript.new()
 	service.auto_initialize = false
 	root.add_child(service)
+	var finished_request_ids: Array[int] = []
+	service.request_finished.connect(
+		func(request: GameServicesRequest, _result: GameServicesResult) -> void:
+			finished_request_ids.append(request.id)
+	)
 
 	var test_config := GameServicesConfig.new()
 	test_config.request_timeout_seconds = 2.0
@@ -59,6 +77,21 @@ func _run() -> void:
 	_check(
 		test_config.achievement_total_steps(&"first_win", &"google_play_games") == 10,
 		"Google achievement step mappings resolve"
+	)
+
+	var pending_initialized := service.initialize(test_config, PendingProvider.new())
+	_check(pending_initialized.ok, "Pending provider initializes")
+	var pending_request := service.authenticate()
+	service.shutdown()
+	var cancelled: GameServicesResult = await pending_request.wait()
+	_check(
+		cancelled.error_code == GameServicesResult.Code.CANCELLED
+		and cancelled.provider == &"pending_test",
+		"Shutdown cancels pending requests with their original provider"
+	)
+	_check(
+		finished_request_ids.count(pending_request.id) == 1,
+		"A cancelled request emits request_finished exactly once"
 	)
 
 	var initialized := service.initialize(test_config, MockGameServicesProvider.new())

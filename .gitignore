@@ -2,6 +2,7 @@
 *.tmp
 *.translation
 export_presets.cfg
+!/tests/integration/clean_project/export_presets.cfg
 /android/
 /native/android/.gradle/
 /native/android/build/

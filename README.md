@@ -5,8 +5,9 @@ Services.
 
 > [!WARNING]
 > This is a development preview targeting Godot 4.7.2. The scripts, Android
-> bridge, and iOS bridge build successfully, but real-device flows still need
-> validation against games configured in App Store Connect and Play Console.
+> bridge, clean Android export, and iOS device/simulator links are validated,
+> but live service flows still need testing on devices against games configured
+> in App Store Connect and Play Console.
 
 ## What it provides
 
@@ -104,6 +105,11 @@ example, or run the automated validation:
 ./scripts/test.sh
 ./scripts/validate_package.sh
 ```
+
+On macOS, `./scripts/test_exports.sh` performs clean-project Android and iOS
+exports, inspects the packaged integrations, and links the generated Xcode
+project for both device and simulator. It requires the Android export toolchain
+to be configured in Godot with JDK 17, plus Xcode command-line tools.
 
 Rebuild native artifacts with `native/android/build.sh` and
 `native/ios/build.sh`. The iOS script requires `GODOT_SOURCE_DIR` to point to an

@@ -21,7 +21,7 @@ still owns its platform records, credentials, signing setup, and identifiers.
    certificate before publishing the Play Games Services configuration.
 
 The editor export plugin adds the bundled AAR, Gson `2.11.0`, Play Games
-Services v2 `21.0.0`, the manifest metadata, and the Android string resource.
+Services v2 `22.0.0`, the manifest metadata, and the Android string resource.
 It requires a Gradle export because the native SDK dependencies must be
 resolved during the Android build.
 

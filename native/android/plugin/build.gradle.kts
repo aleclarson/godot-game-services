@@ -36,7 +36,7 @@ android {
 
 dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
-    implementation("com.google.android.gms:play-services-games-v2:21.0.0")
+    implementation("com.google.android.gms:play-services-games-v2:22.0.0")
     implementation("org.godotengine:godot:4.7.2.stable")
 
 }

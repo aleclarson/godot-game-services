@@ -9,6 +9,14 @@ reports optional capabilities at runtime. Treating every similarly named API as
 identical would be incorrect, especially for authentication, achievement
 progress, server credentials, and cloud-save conflicts.
 
+The implementation validates the architectural and packaging parts of that
+finding: its normalized contract runs against mock and native-singleton fakes,
+the documented two-directory installation works in a clean Godot project, an
+Android Gradle export contains the bridge and PGS v2 configuration, and the iOS
+export links the Game Center bridge for device and simulator. This does not
+validate live accounts, console records, system UI, network errors, or cloud-save
+conflicts on physical devices; those remain the release-gating evidence.
+
 ## Existing Godot integrations
 
 The [Godot SDK Integrations organization](https://github.com/godot-sdk-integrations)
@@ -28,6 +36,11 @@ their runtime singletons without linking against their GDScript types and ships
 narrow source forks plus Godot 4.7.2 binaries. That keeps the normalized core
 independently testable and makes missing native plugins a reported runtime
 condition rather than a parse error.
+
+The Android fork is rebuilt against PGS v2 `22.0.0`, released after the current
+upstream wrapper. Google's release notes describe the update as adding game
+statistics and player game events; the normalized API does not expose those
+provider-only features yet.
 
 ## Capability matrix
 
@@ -65,7 +78,9 @@ condition rather than a parse error.
 ## Important semantic constraints
 
 - Google documents PGS v2 as a platform engagement identity, not a game's
-  primary account system. The normalized player ID must not be presented as a
+  primary account system. Authentication normally begins automatically during
+  launch, while an explicit sign-in attempt is available after an unsuccessful
+  automatic attempt. The normalized player ID must not be presented as a
   replacement for an in-game account.
 - Game Center has no application-controlled sign-out operation. The public API
   therefore does not promise portable sign-out behavior.
@@ -82,10 +97,14 @@ condition rather than a parse error.
 
 ## Primary references
 
+- Godot: [Android plugins](https://docs.godotengine.org/en/stable/tutorials/platform/android/android_plugin.html)
 - Godot: [Plugins for iOS](https://docs.godotengine.org/en/stable/tutorials/platform/ios/plugins_for_ios.html)
-- Apple: [Initializing and configuring Game Center](https://developer.apple.com/documentation/gamekit/initializing-and-configuring-game-center)
-- Apple: [Fetching saved games](https://developer.apple.com/documentation/gamekit/gklocalplayer/fetchsavedgames(completionhandler:))
+- Godot: [Registering an autoload from an editor plugin](https://docs.godotengine.org/en/stable/tutorials/plugins/editor/making_plugins.html#registering-autoloads-singletons-in-plugins)
+- Apple: [Authenticating a player](https://developer.apple.com/documentation/gamekit/authenticating-a-player)
+- Apple: [Saving game data to iCloud](https://developer.apple.com/documentation/gamekit/saving-the-player-s-game-data-to-an-icloud-account)
 - Google: [Get started with Play Games Services](https://developer.android.com/games/pgs/start)
-- Google: [PGS v2 migration overview](https://developer.android.com/games/pgs/migration_overview)
+- Google: [Platform authentication](https://developer.android.com/games/pgs/platform-authentication)
 - Google: [Achievements](https://developer.android.com/games/pgs/achievements)
+- Google: [Cloud save](https://developer.android.com/games/pgs/savedgames)
+- Google: [Google Play services release notes](https://developers.google.com/android/guides/releases)
 - Google: [Quality checklist](https://developer.android.com/games/pgs/quality)

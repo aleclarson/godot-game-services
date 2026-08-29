@@ -6,6 +6,7 @@ repository_root="$(cd -- "$script_dir/.." && pwd)"
 
 cd "$repository_root"
 ./scripts/test.sh
+./scripts/test_clean_install.sh
 
 android_variants=(debug release)
 for variant in "${android_variants[@]}"; do

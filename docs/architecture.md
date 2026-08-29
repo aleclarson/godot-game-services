@@ -58,6 +58,10 @@ authenticated, invalid argument, not configured, platform error, cancelled,
 conflict, not found, and internal error. The original platform code and native
 payload are preserved separately when available.
 
+The facade owns request lifetime. It tracks unfinished requests and completes
+them as cancelled before shutting down or replacing their provider, so callers
+do not remain suspended until a stale timeout after a lifecycle transition.
+
 ## Native packaging boundary
 
 The addon owns two narrow forks of existing MIT-licensed integrations. The

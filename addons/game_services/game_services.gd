@@ -24,6 +24,7 @@ var auto_initialize: bool = true
 var config: GameServicesConfig
 var provider: GameServicesProvider
 var _provider_available: bool = false
+var _active_requests: Dictionary[int, GameServicesRequest] = {}
 
 
 func _ready() -> void:
@@ -47,6 +48,7 @@ func initialize(
 
 
 func shutdown() -> void:
+	_cancel_pending_requests(provider_name())
 	_provider_available = false
 	if not is_instance_valid(provider):
 		provider = null
@@ -354,6 +356,7 @@ func _track(request: GameServicesRequest) -> GameServicesRequest:
 	if request.is_completed:
 		call_deferred("_emit_request_finished", request, request.result)
 	else:
+		_active_requests[request.id] = request
 		request.completed.connect(
 			Callable(self, "_on_request_completed").bind(request),
 			CONNECT_ONE_SHOT
@@ -364,6 +367,7 @@ func _track(request: GameServicesRequest) -> GameServicesRequest:
 
 
 func _on_request_completed(result: GameServicesResult, request: GameServicesRequest) -> void:
+	_active_requests.erase(request.id)
 	request_finished.emit(request, result)
 
 
@@ -380,6 +384,21 @@ func _on_request_timeout(request: GameServicesRequest) -> void:
 		"%s timed out after %.1f seconds" % [request.operation, config.request_timeout_seconds],
 		provider_name()
 	))
+
+
+func _cancel_pending_requests(cancelled_provider: StringName) -> void:
+	var requests := _active_requests.values()
+	for value: Variant in requests:
+		var request := value as GameServicesRequest
+		if request == null or request.is_completed:
+			continue
+		request.complete(GameServicesResult.failure(
+			request.operation,
+			GameServicesResult.Code.CANCELLED,
+			"Game services shut down before the request completed",
+			cancelled_provider
+		))
+	_active_requests.clear()
 
 
 func _on_authentication_changed(authenticated: bool, player: Dictionary) -> void:

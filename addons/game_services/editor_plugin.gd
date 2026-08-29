@@ -10,14 +10,20 @@ var _android_export_plugin: AndroidExportPlugin
 func _enter_tree() -> void:
 	_android_export_plugin = AndroidExportPlugin.new()
 	add_export_plugin(_android_export_plugin)
-	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
 
 
 func _exit_tree() -> void:
-	remove_autoload_singleton(AUTOLOAD_NAME)
 	if is_instance_valid(_android_export_plugin):
 		remove_export_plugin(_android_export_plugin)
 	_android_export_plugin = null
+
+
+func _enable_plugin() -> void:
+	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
+
+
+func _disable_plugin() -> void:
+	remove_autoload_singleton(AUTOLOAD_NAME)
 
 
 class AndroidExportPlugin extends EditorExportPlugin:
@@ -55,7 +61,7 @@ class AndroidExportPlugin extends EditorExportPlugin:
 			return PackedStringArray()
 		return PackedStringArray([
 			"com.google.code.gson:gson:2.11.0",
-			"com.google.android.gms:play-services-games-v2:21.0.0",
+			"com.google.android.gms:play-services-games-v2:22.0.0",
 		])
 
 
