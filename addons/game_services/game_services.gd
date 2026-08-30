@@ -24,6 +24,7 @@ var auto_initialize: bool = true
 var config: GameServicesConfig
 var provider: GameServicesProvider
 var cloud_saves: CloudSaveStore
+var store_review: StoreReviewService
 var _provider_available: bool = false
 var _active_requests: Dictionary[int, GameServicesRequest] = {}
 var _request_notifications: Dictionary[int, bool] = {}
@@ -31,6 +32,7 @@ var _request_notifications: Dictionary[int, bool] = {}
 
 func _init() -> void:
 	cloud_saves = CloudSaveStore.new(self)
+	store_review = StoreReviewService.new()
 
 
 func _ready() -> void:
@@ -40,10 +42,17 @@ func _ready() -> void:
 
 func initialize(
 	p_config: GameServicesConfig = null,
-	provider_override: GameServicesProvider = null
+	provider_override: GameServicesProvider = null,
+	store_review_override: StoreReviewService = null
 ) -> GameServicesResult:
 	shutdown()
 	config = p_config if p_config != null else _load_default_config()
+	store_review = (
+		store_review_override
+		if store_review_override != null
+		else StoreReviewService.new()
+	)
+	store_review.initialize(config)
 	provider = provider_override if provider_override != null else _select_provider()
 	add_child(provider)
 	provider.authentication_changed.connect(_on_authentication_changed)
@@ -56,6 +65,8 @@ func initialize(
 func shutdown() -> void:
 	cloud_saves._cancel_pending_requests(provider_name())
 	_cancel_pending_requests(provider_name())
+	if is_instance_valid(store_review):
+		store_review.shutdown()
 	_provider_available = false
 	if not is_instance_valid(provider):
 		provider = null
@@ -81,6 +92,22 @@ func supports(capability: Capability) -> bool:
 
 func is_authenticated() -> bool:
 	return _has_provider() and provider.is_authenticated()
+
+
+func supports_store_review() -> bool:
+	return is_instance_valid(store_review) and store_review.supports_native_review()
+
+
+func request_in_app_review() -> GameServicesRequest:
+	if not is_instance_valid(store_review):
+		return _unavailable_request(&"request_in_app_review")
+	return _track(store_review.request_in_app_review())
+
+
+func open_store_review_page() -> GameServicesRequest:
+	if not is_instance_valid(store_review):
+		return _unavailable_request(&"open_store_review_page")
+	return _track(store_review.open_store_review_page())
 
 
 func authenticate() -> GameServicesRequest:
@@ -441,7 +468,8 @@ func _track(
 			Callable(self, "_on_request_completed").bind(request),
 			CONNECT_ONE_SHOT
 		)
-		var timer := get_tree().create_timer(config.request_timeout_seconds)
+		var timeout_seconds := config.request_timeout_seconds if config != null else 30.0
+		var timer := get_tree().create_timer(timeout_seconds)
 		timer.timeout.connect(Callable(self, "_on_request_timeout").bind(request))
 	return request
 

@@ -18,6 +18,13 @@ extends Resource
 @export var google_leaderboard_ids: Dictionary = {}
 @export var google_server_client_id: String = ""
 
+@export_category("Store Review")
+@export var apple_app_store_id: String = ""
+@export var apple_store_review_url: String = ""
+@export var google_play_package_name: String = ""
+@export var google_play_store_review_url: String = ""
+@export var mock_store_review_url: String = ""
+
 @export_category("Mock provider")
 @export var mock_player_id: String = "mock-player"
 @export var mock_player_display_name: String = "Mock Player"
@@ -43,6 +50,25 @@ func logical_achievement_id(platform_id: String, provider_name: StringName) -> S
 
 func logical_leaderboard_id(platform_id: String, provider_name: StringName) -> String:
 	return _logical_id(platform_id, provider_name, apple_leaderboard_ids, google_leaderboard_ids)
+
+
+func store_review_url(platform: StringName) -> String:
+	match platform:
+		&"ios":
+			if not apple_store_review_url.strip_edges().is_empty():
+				return apple_store_review_url.strip_edges()
+			var app_store_id := apple_app_store_id.strip_edges()
+			if _digits_only(app_store_id):
+				return "https://apps.apple.com/app/id%s?action=write-review" % app_store_id
+		&"android":
+			if not google_play_store_review_url.strip_edges().is_empty():
+				return google_play_store_review_url.strip_edges()
+			var package_name := google_play_package_name.strip_edges()
+			if not package_name.is_empty():
+				return "https://play.google.com/store/apps/details?id=%s" % package_name
+		&"mock":
+			return mock_store_review_url.strip_edges()
+	return ""
 
 
 func mock_player() -> Dictionary:
@@ -93,3 +119,12 @@ func _logical_id(
 		if str(ids[logical_id]) == platform_id:
 			return str(logical_id)
 	return ""
+
+
+func _digits_only(value: String) -> bool:
+	if value.is_empty():
+		return false
+	for character in value:
+		if "0123456789".find(character) < 0:
+			return false
+	return true

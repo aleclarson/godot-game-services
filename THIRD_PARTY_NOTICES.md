@@ -23,3 +23,11 @@ This fork targets Godot 4.7.2 and iOS 15, updates score submission and Game
 Center presentation to the current GameKit APIs, preserves signed 64-bit
 leaderboard scores, and adds named saved-game operations and conflict
 resolution.
+
+## Google Play In-App Review library
+
+The Android StoreReview bridge resolves
+`com.google.android.play:review:2.0.2` from Google's Maven repository. The
+library is distributed under the Apache License, Version 2.0. Its license and
+notice are supplied by the resolved dependency during the Gradle export; the
+project does not vendor or modify its source.

@@ -12,10 +12,11 @@ progress, server credentials, and cloud-save conflicts.
 The implementation validates the architectural and packaging parts of that
 finding: its normalized contract runs against mock and native-singleton fakes,
 the documented two-directory installation works in a clean Godot project, an
-Android Gradle export contains the bridge and PGS v2 configuration, and the iOS
-export links the Game Center bridge for device and simulator. This does not
-validate live accounts, console records, system UI, network errors, or cloud-save
-conflicts on physical devices; those remain the release-gating evidence.
+Android Gradle export contains the bridges and PGS/review configuration, and
+the iOS export links the Game Center and StoreReview bridges for device and
+simulator. This does not validate live accounts, console records, system UI,
+network errors, or cloud-save conflicts on physical devices; those remain the
+release-gating evidence.
 
 ## Existing Godot integrations
 
@@ -55,6 +56,7 @@ provider-only features yet.
 | Platform UI | One Game Center controller with dashboard states | Separate achievements, leaderboard, and saved-game intents | Presentation requests share methods; completion only means the request was accepted |
 | Cloud saves | `GKLocalPlayer` saved-game APIs with named data and conflict resolution | Snapshot APIs with metadata and conflicts | Capability-gated named binary saves with explicit conflict results |
 | Server credentials | Identity-verification signature tuple | One-time server authorization code | One method returning a discriminated credential `kind`; payloads are deliberately not flattened |
+| Store reviews | StoreKit review request; App Store write-a-review URL | Play In-App Review flow; Play Store app URL | Contextual `request_in_app_review()` plus explicit `open_store_review_page()`; completion is a handoff, not proof of display or submission |
 
 ## Upstream constraints and the package boundary
 
@@ -94,6 +96,11 @@ provider-only features yet.
 - Cloud-save conflict resolution requires more design than last-write-wins. A
   provider that cannot expose conflicts must not advertise the cloud-save
   capability.
+- Store review prompts are policy-controlled and may not appear. The normalized
+  API must not claim display or submission, and a failed or suppressed request
+  must not trigger an implicit store-page redirect. The explicit page operation
+  remains available for a game-owned fallback action and is independent of
+  Game Center or Play Games authentication.
 
 ## Primary references
 
@@ -102,9 +109,11 @@ provider-only features yet.
 - Godot: [Registering an autoload from an editor plugin](https://docs.godotengine.org/en/stable/tutorials/plugins/editor/making_plugins.html#registering-autoloads-singletons-in-plugins)
 - Apple: [Authenticating a player](https://developer.apple.com/documentation/gamekit/authenticating-a-player)
 - Apple: [Saving game data to iCloud](https://developer.apple.com/documentation/gamekit/saving-the-player-s-game-data-to-an-icloud-account)
+- Apple: [SKStoreReviewController](https://developer.apple.com/documentation/storekit/skstorereviewcontroller)
 - Google: [Get started with Play Games Services](https://developer.android.com/games/pgs/start)
 - Google: [Platform authentication](https://developer.android.com/games/pgs/platform-authentication)
 - Google: [Achievements](https://developer.android.com/games/pgs/achievements)
 - Google: [Cloud save](https://developer.android.com/games/pgs/savedgames)
+- Google: [In-app reviews](https://developer.android.com/guide/playcore/in-app-review)
 - Google: [Google Play services release notes](https://developers.google.com/android/guides/releases)
 - Google: [Quality checklist](https://developer.android.com/games/pgs/quality)

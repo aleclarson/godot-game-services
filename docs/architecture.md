@@ -28,6 +28,9 @@ Game code
         -> AppleGameCenterProvider -> native GameCenter singleton
         -> GooglePlayGamesProvider -> native GodotPlayGameServices singleton
         -> MockGameServicesProvider -> deterministic editor/test state
+    -> StoreReviewService (contextual request and explicit store-page handoff)
+        -> native StoreReview singleton on iOS or Android
+        -> mock/editor URL opener
 ```
 
 Platform identifiers are configuration, not conditionals scattered through game
@@ -53,6 +56,12 @@ The initial capability set is:
 
 The mask describes implemented behavior, not what the underlying platform could
 theoretically support.
+
+Store reviews deliberately sit beside that provider mask. `StoreReviewService`
+owns the dedicated native plugin lifecycle, store-destination configuration,
+and the distinction between a contextual in-app request and an explicit store
+page. It does not depend on provider authentication and does not redirect after
+a suppressed or failed prompt.
 
 ## Error model
 
@@ -85,11 +94,12 @@ custom policy. These boundaries avoid hidden writes and silent data loss.
 
 ## Native packaging boundary
 
-The addon owns two narrow forks of existing MIT-licensed integrations. The
-Android export plugin injects its AAR and Maven dependencies into a Gradle
-export. Godot's iOS exporter discovers the `.gdip` descriptor and selects the
-debug or release XCFramework. Both native bridges are built against an exact
-Godot engine version because their Godot-facing ABI is version-coupled.
+The addon owns the narrow Game Center/Play Games forks plus a dedicated
+StoreReview plugin. The Android export plugin injects both AARs and their Maven
+dependencies into a Gradle export. Godot's iOS exporter discovers both `.gdip`
+descriptors and selects the debug or release XCFrameworks. The native bridges
+are built against an exact Godot engine version because their Godot-facing ABI
+is version-coupled.
 
 The forks add only behavior required for the normalized contract: Android
 snapshot conflict resolution, Apple saved-game operations, and lossless Apple

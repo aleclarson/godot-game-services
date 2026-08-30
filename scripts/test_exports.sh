@@ -55,6 +55,7 @@ merged_manifest="$(find "$fixture_dir/android/build/build/intermediates/merged_m
 test -n "$merged_manifest"
 rg -q 'com.google.android.gms.games.APP_ID' "$merged_manifest"
 rg -q 'org.godotengine.plugin.v2.GodotPlayGameServices' "$merged_manifest"
+rg -q 'org.godotengine.plugin.v2.StoreReview' "$merged_manifest"
 
 ios_name="game-services-ios-debug"
 ios_project="$output_dir/$ios_name.xcodeproj"
@@ -65,8 +66,11 @@ run_logged "$output_dir/ios-export.log" \
 
 test -d "$ios_project"
 test -s "$ios_app_dir/dylibs/ios/plugins/game_services/gamecenter.xcframework/Info.plist"
+test -s "$ios_app_dir/dylibs/ios/plugins/game_services/storereview.xcframework/Info.plist"
 rg -q 'gamecenter\.xcframework' "$ios_project/project.pbxproj"
+rg -q 'storereview\.xcframework' "$ios_project/project.pbxproj"
 rg -q 'GameKit\.framework' "$ios_project/project.pbxproj"
+rg -q 'StoreKit\.framework' "$ios_project/project.pbxproj"
 plutil -p "$ios_app_dir/$ios_name.entitlements" | rg -q '"com\.apple\.developer\.game-center" => true'
 
 run_logged "$output_dir/xcode-device.log" \
@@ -77,12 +81,14 @@ run_logged "$output_dir/xcode-device.log" \
 
 godot_sim_library="$output_dir/$ios_name.xcframework/ios-arm64_x86_64-simulator/libgodot.a"
 plugin_sim_library="$ios_app_dir/dylibs/ios/plugins/game_services/gamecenter.xcframework/ios-arm64_x86_64-simulator/libgamecenter-simulator.release_debug.a"
+store_review_sim_library="$ios_app_dir/dylibs/ios/plugins/game_services/storereview.xcframework/ios-arm64_x86_64-simulator/libstorereview-simulator.release_debug.a"
 godot_sim_arches="$(xcrun lipo -archs "$godot_sim_library")"
 plugin_sim_arches="$(xcrun lipo -archs "$plugin_sim_library")"
+store_review_sim_arches="$(xcrun lipo -archs "$store_review_sim_library")"
 simulator_arch=""
-if [[ " $godot_sim_arches " == *" arm64 "* && " $plugin_sim_arches " == *" arm64 "* ]]; then
+if [[ " $godot_sim_arches " == *" arm64 "* && " $plugin_sim_arches " == *" arm64 "* && " $store_review_sim_arches " == *" arm64 "* ]]; then
   simulator_arch="arm64"
-elif [[ " $godot_sim_arches " == *" x86_64 "* && " $plugin_sim_arches " == *" x86_64 "* ]]; then
+elif [[ " $godot_sim_arches " == *" x86_64 "* && " $plugin_sim_arches " == *" x86_64 "* && " $store_review_sim_arches " == *" x86_64 "* ]]; then
   simulator_arch="x86_64"
 else
   echo "FAIL: Godot and Game Center have no common simulator architecture" >&2

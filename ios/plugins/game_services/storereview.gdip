@@ -1,0 +1,17 @@
+[config]
+name="StoreReview"
+binary="storereview.xcframework"
+
+initialization="register_storereview_types"
+deinitialization="unregister_storereview_types"
+
+[dependencies]
+linked=[]
+embedded=[]
+system=["StoreKit.framework", "UIKit.framework"]
+
+capabilities=["storekit"]
+
+files=[]
+
+[plist]

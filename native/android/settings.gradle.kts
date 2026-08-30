@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "GodotPlayGameServices"
-include(":plugin")
+include(":plugin", ":store_review")

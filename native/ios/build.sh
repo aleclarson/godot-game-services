@@ -31,39 +31,47 @@ build_slice() {
   local target="$1"
   local arch="$2"
   local simulator="$3"
+  local plugin="$4"
   "$scons_bin" -C "$script_dir" \
     target="$target" \
     arch="$arch" \
     simulator="$simulator" \
-    plugin=gamecenter \
+    plugin="$plugin" \
     version=4.0 \
     godot_dir="$GODOT_SOURCE_DIR" \
     target_path="$build_dir/"
 }
 
-for target in release_debug release; do
-  build_slice "$target" arm64 no
-  build_slice "$target" arm64 yes
-  build_slice "$target" x86_64 yes
+build_plugin() {
+  local plugin="$1"
+  for target in release_debug release; do
+    build_slice "$target" arm64 no "$plugin"
+    build_slice "$target" arm64 yes "$plugin"
+    build_slice "$target" x86_64 yes "$plugin"
 
-  xcrun lipo -create \
-    "$build_dir/libgamecenter.arm64-simulator.$target.a" \
-    "$build_dir/libgamecenter.x86_64-simulator.$target.a" \
-    -output "$build_dir/libgamecenter-simulator.$target.a"
+    xcrun lipo -create \
+      "$build_dir/lib$plugin.arm64-simulator.$target.a" \
+      "$build_dir/lib$plugin.x86_64-simulator.$target.a" \
+      -output "$build_dir/lib$plugin-simulator.$target.a"
 
-  framework_variant="release"
-  if [[ "$target" == "release_debug" ]]; then
-    framework_variant="debug"
-  fi
-  framework_path="$output_dir/gamecenter.$framework_variant.xcframework"
-  if [[ -e "$framework_path" ]]; then
-    rm -rf "$framework_path"
-  fi
-  xcodebuild -create-xcframework \
-    -library "$build_dir/libgamecenter.arm64-ios.$target.a" \
-    -library "$build_dir/libgamecenter-simulator.$target.a" \
-    -output "$framework_path"
-done
+    framework_variant="release"
+    if [[ "$target" == "release_debug" ]]; then
+      framework_variant="debug"
+    fi
+    framework_path="$output_dir/$plugin.$framework_variant.xcframework"
+    if [[ -e "$framework_path" ]]; then
+      rm -rf "$framework_path"
+    fi
+    xcodebuild -create-xcframework \
+      -library "$build_dir/lib$plugin.arm64-ios.$target.a" \
+      -library "$build_dir/lib$plugin-simulator.$target.a" \
+      -output "$framework_path"
+  done
 
-install -m 0644 "$script_dir/gamecenter/gamecenter.gdip" "$output_dir/gamecenter.gdip"
-echo "Installed iOS XCFrameworks in ios/plugins/game_services."
+  install -m 0644 "$script_dir/$plugin/$plugin.gdip" "$output_dir/$plugin.gdip"
+}
+
+build_plugin gamecenter
+build_plugin storereview
+
+echo "Installed iOS game-services and StoreReview XCFrameworks in ios/plugins/game_services."

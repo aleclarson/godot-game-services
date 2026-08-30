@@ -10,20 +10,24 @@ still owns its platform records, credentials, signing setup, and identifiers.
    match the debug and release builds you will test.
 2. Create achievements and leaderboards, then copy their IDs into
    `game_services_config.tres`.
-3. If cloud saves are used, enable **Saved Games** in the Play Games Services
+3. Set `google_play_package_name` in `game_services_config.tres`. You may set
+   `google_play_store_review_url` when the game needs a custom destination;
+   otherwise the package name derives the normal Play Store page URL.
+4. If cloud saves are used, enable **Saved Games** in the Play Games Services
    project properties.
-4. In Godot, install the Android Gradle build template from the **Project**
+5. In Godot, install the Android Gradle build template from the **Project**
    menu and enable the Gradle build in the Android export preset.
-5. Set **Game Services > Google Game ID** in the Android export preset to the
+6. Set **Game Services > Google Game ID** in the Android export preset to the
    numeric project ID shown in Play Console. This is the application ID used by
    the Play Games SDK, not an OAuth client ID.
-6. Add test accounts in Play Console and test an APK signed with a linked
+7. Add test accounts in Play Console and test an APK signed with a linked
    certificate before publishing the Play Games Services configuration.
 
 The editor export plugin adds the bundled AAR, Gson `2.11.0`, Play Games
-Services v2 `22.0.0`, the manifest metadata, and the Android string resource.
-It requires a Gradle export because the native SDK dependencies must be
-resolved during the Android build.
+Services v2 `22.0.0`, Google Play In-App Review `2.0.2`, the manifest metadata,
+and the Android string resource. Store review requests are independent of Play
+Games authentication. It requires a Gradle export because the native SDK
+dependencies must be resolved during the Android build.
 
 Google's official setup guide explains the package-name, certificate, OAuth,
 and tester requirements:
@@ -34,9 +38,17 @@ and tester requirements:
 1. Enable Game Center for the app identifier and configure the game's
    achievements and leaderboards in App Store Connect.
 2. Add an iOS export preset in Godot. Enable **Entitlements > Game Center** and
-   enable the bundled **GameCenter** plugin in the preset.
-3. Copy the App Store Connect identifiers into `game_services_config.tres`.
-4. Export from macOS with Xcode and test using a sandbox Game Center account.
+   enable the bundled **GameCenter** and **StoreReview** plugins in the preset.
+3. Set `apple_app_store_id` in `game_services_config.tres`. You may set
+   `apple_store_review_url` when the game needs a custom destination; otherwise
+   the App Store ID derives the standard write-a-review URL.
+4. Copy the App Store Connect identifiers into `game_services_config.tres`.
+5. Export from macOS with Xcode and test using a sandbox Game Center account.
+
+The StoreReview plugin calls StoreKit using the active foreground scene. Apple
+controls eligibility and may suppress the prompt, so a completed request does
+not prove that UI appeared or that a review was submitted. Use
+`open_store_review_page()` for an explicit, game-controlled fallback.
 
 Cloud saves additionally require iCloud for the app identifier, an iCloud
 container, and the iCloud Documents service. Configure those capabilities in

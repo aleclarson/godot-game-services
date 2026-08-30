@@ -28,6 +28,7 @@ func _disable_plugin() -> void:
 
 class AndroidExportPlugin extends EditorExportPlugin:
 	const PLUGIN_NAME := &"GodotPlayGameServices"
+	const STORE_REVIEW_PLUGIN_NAME := &"StoreReview"
 	const OPTION_NAME := &"game_services/google_game_id"
 	const VALUES_DIRECTORY := "res://android/build/res/values"
 	const DIGITS := "0123456789"
@@ -49,7 +50,8 @@ class AndroidExportPlugin extends EditorExportPlugin:
 			return PackedStringArray()
 		var variant := "debug" if debug else "release"
 		return PackedStringArray([
-			"game_services/bin/android/%s/%s-%s.aar" % [variant, PLUGIN_NAME, variant]
+			"game_services/bin/android/%s/%s-%s.aar" % [variant, PLUGIN_NAME, variant],
+			"game_services/bin/android/%s/%s-%s.aar" % [variant, STORE_REVIEW_PLUGIN_NAME, variant],
 		])
 
 
@@ -62,6 +64,7 @@ class AndroidExportPlugin extends EditorExportPlugin:
 		return PackedStringArray([
 			"com.google.code.gson:gson:2.11.0",
 			"com.google.android.gms:play-services-games-v2:22.0.0",
+			"com.google.android.play:review:2.0.2",
 		])
 
 

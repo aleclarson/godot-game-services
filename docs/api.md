@@ -28,6 +28,7 @@ owned the request.
 | Achievements | `unlock_achievement(id)`, `set_achievement_progress(id, progress)`, `load_achievements()` |
 | Leaderboards | `submit_score(id, score)`, `show_leaderboards(id)` |
 | Platform UI | `show_achievements()`, `show_leaderboards()` |
+| Store reviews | `supports_store_review()`, `request_in_app_review()`, `open_store_review_page()` |
 | Server verification | `request_server_credentials(options)` |
 | Typed cloud saves | `cloud_saves.slot(name)`, `create()`, `load()`, `load_or_create()`, `update()`, `save()`, `exists()`, `list()`, `delete()`, validation, and conflict resolution |
 | Raw cloud saves | `save_game(name, data, metadata)`, `load_game(name)`, `list_saved_games()`, `delete_saved_game(id)`, `resolve_saved_game_conflict(...)` |
@@ -41,6 +42,30 @@ Server credentials intentionally remain discriminated values. Apple returns
 `kind = "game_center_identity_signature"` with its signature tuple; Google
 returns `kind = "play_games_server_auth_code"` with a one-time authorization
 code.
+
+## Store reviews
+
+`request_in_app_review()` is a contextual request. It uses the dedicated
+StoreReview native plugin on iOS and Android and does not require Game Center or
+Play Games authentication. A successful result reports that StoreKit or Google
+Play accepted the native request/flow handoff; platform policy may suppress the
+prompt, and the result does not claim that a prompt was displayed or a review
+was submitted.
+
+`open_store_review_page()` is an explicit store-page handoff. It never runs as
+an automatic consequence of a failed or suppressed in-app request. Configure
+the destinations in `GameServicesConfig`:
+
+- `apple_store_review_url` or a digits-only `apple_app_store_id`
+- `google_play_store_review_url` or `google_play_package_name`
+- `mock_store_review_url` for the editor mock flow
+
+Explicit URLs take precedence. When an explicit URL is absent, the Apple ID
+derives `https://apps.apple.com/app/id<ID>?action=write-review` and the Google
+package derives `https://play.google.com/store/apps/details?id=<PACKAGE>`.
+The request result contains the normalized operation and native platform
+details; the explicit page result includes the destination URL and whether the
+native bridge accepted the handoff.
 
 ## Typed cloud saves
 

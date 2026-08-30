@@ -3,8 +3,10 @@ extends SceneTree
 const GameServicesScript := preload("res://addons/game_services/game_services.gd")
 const FakeGameCenter := preload("res://tests/fakes/fake_game_center.gd")
 const FakeGooglePlayGames := preload("res://tests/fakes/fake_google_play_games.gd")
+const FakeStoreReview := preload("res://tests/fakes/fake_store_review.gd")
 
 var _failures: PackedStringArray = []
+var _opened_review_urls: PackedStringArray = []
 
 
 class UnavailableProvider extends GameServicesProvider:
@@ -298,6 +300,7 @@ func _run() -> void:
 	await _test_cloud_save_conflicts(test_config)
 	await _test_google_adapter(test_config)
 	await _test_apple_adapter(test_config)
+	await _test_store_review(test_config)
 
 	if _failures.is_empty():
 		print("PASS: all game-services tests")
@@ -848,3 +851,130 @@ func _test_apple_adapter(test_config: GameServicesConfig) -> void:
 	service.queue_free()
 	Engine.unregister_singleton("GameCenter")
 	fake.free()
+
+
+func _test_store_review(test_config: GameServicesConfig) -> void:
+	test_config.apple_app_store_id = "123456789012"
+	test_config.google_play_package_name = "com.example.game"
+	test_config.mock_store_review_url = "https://example.test/review"
+
+	var fake := FakeStoreReview.new()
+	Engine.register_singleton("StoreReview", fake)
+	var ios_review := StoreReviewService.new()
+	ios_review.platform_override = &"ios"
+	var service := GameServicesScript.new()
+	service.auto_initialize = false
+	root.add_child(service)
+
+	var initialized := service.initialize(test_config, UnavailableProvider.new(), ios_review)
+	_check(initialized.error_code == GameServicesResult.Code.UNAVAILABLE, "Review setup does not mask provider failure")
+	_check(service.supports_store_review(), "Store review support is independent of provider capabilities")
+	_check(not service.is_authenticated(), "Store review does not require game-service authentication")
+
+	var request := service.request_in_app_review()
+	var requested: GameServicesResult = await request.wait()
+	_check(
+		requested.ok and requested.data.handoff == "native_review_request",
+		"iOS review requests complete as native handoff"
+	)
+	_check(
+		fake.calls.size() == 1 and fake.calls[0].method == "request_in_app_review",
+		"iOS review requests use the dedicated native singleton"
+	)
+
+	var store_page: GameServicesResult = await service.open_store_review_page().wait()
+	_check(
+		store_page.ok
+		and store_page.data.url == "https://apps.apple.com/app/id123456789012?action=write-review",
+		"Apple store-page URLs can be derived from the configured app ID"
+	)
+	_check(
+		fake.calls.size() == 2 and fake.calls[1].method == "open_store_review_page",
+		"Explicit Apple store-page navigation stays on the dedicated plugin"
+	)
+
+	service.shutdown()
+	service.queue_free()
+	Engine.unregister_singleton("StoreReview")
+	fake.free()
+
+	var android_fake := FakeStoreReview.new()
+	Engine.register_singleton("StoreReview", android_fake)
+	var android_review := StoreReviewService.new()
+	android_review.platform_override = &"android"
+	var android_service := GameServicesScript.new()
+	android_service.auto_initialize = false
+	root.add_child(android_service)
+	android_service.initialize(test_config, UnavailableProvider.new(), android_review)
+
+	var android_request := android_service.request_in_app_review()
+	_check(not android_request.is_completed, "Android review waits for the native flow completion")
+	_check(
+		android_fake.calls.size() == 1
+		and android_fake.calls[0].method == "requestInAppReview",
+		"Android review requests use the native plugin method"
+	)
+	var android_store_page: GameServicesResult = await android_service.open_store_review_page().wait()
+	_check(
+		android_store_page.ok
+		and android_store_page.data.native
+		and android_fake.calls.size() == 2
+		and android_fake.calls[1].method == "openStoreReviewPage",
+		"Android store-page navigation uses the dedicated native plugin"
+	)
+	android_fake.reviewFlowCompleted.emit(true, 0, "")
+	var android_result: GameServicesResult = await android_request.wait()
+	_check(
+		android_result.ok and android_result.data.handoff == "native_review_flow",
+		"Android review requests normalize Play flow completion"
+	)
+
+	android_service.shutdown()
+	android_service.queue_free()
+	Engine.unregister_singleton("StoreReview")
+	android_fake.free()
+
+	_opened_review_urls.clear()
+	var fallback_review := StoreReviewService.new()
+	fallback_review.platform_override = &"android"
+	fallback_review.url_opener = Callable(self, "_capture_review_url")
+	var fallback_service := GameServicesScript.new()
+	fallback_service.auto_initialize = false
+	root.add_child(fallback_service)
+	fallback_service.initialize(test_config, UnavailableProvider.new(), fallback_review)
+	var fallback_result: GameServicesResult = await fallback_service.open_store_review_page().wait()
+	_check(
+		fallback_result.ok
+		and fallback_result.data.native == false
+		and _opened_review_urls == PackedStringArray(["https://play.google.com/store/apps/details?id=com.example.game"]),
+		"Store-page navigation falls back to the configured platform URL"
+	)
+
+	_opened_review_urls.clear()
+	var no_redirect_fake := FakeStoreReview.new()
+	var no_redirect_review := StoreReviewService.new()
+	no_redirect_review.platform_override = &"android"
+	no_redirect_review.native_plugin_override = no_redirect_fake
+	no_redirect_fake.request_error = FAILED
+	no_redirect_review.url_opener = Callable(self, "_capture_review_url")
+	var no_redirect_service := GameServicesScript.new()
+	no_redirect_service.auto_initialize = false
+	root.add_child(no_redirect_service)
+	no_redirect_service.initialize(test_config, UnavailableProvider.new(), no_redirect_review)
+	var failed_request: GameServicesResult = await no_redirect_service.request_in_app_review().wait()
+	_check(
+		failed_request.error_code == GameServicesResult.Code.PLATFORM_ERROR
+		and _opened_review_urls.is_empty(),
+		"A failed contextual prompt never redirects to the store page"
+	)
+
+	no_redirect_service.shutdown()
+	no_redirect_service.queue_free()
+	fallback_service.shutdown()
+	fallback_service.queue_free()
+	no_redirect_fake.free()
+
+
+func _capture_review_url(url: String) -> bool:
+	_opened_review_urls.append(url)
+	return true

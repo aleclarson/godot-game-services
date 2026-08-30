@@ -15,17 +15,19 @@ This addon is for a Godot game shipping on both iOS and Android that should not
 need platform branches throughout its gameplay code.
 
 - Call the same methods for authentication, achievements, leaderboards,
-  platform UI, server credentials, and cloud saves on either platform.
+  platform UI, in-app reviews, server credentials, and cloud saves on either
+  platform.
 - Keep Apple and Google achievement and leaderboard IDs in one configuration
   resource. Game code uses stable, game-owned names such as `first_win`.
 - Develop in the editor without a store account or native SDK. The mock provider
-  keeps authentication, achievements, scores, and saved games in memory.
+  keeps authentication, achievements, scores, saved games, and review fallback
+  URLs in memory.
 - Match every asynchronous result to the request that started it, including
   concurrent saves or score submissions. Results share portable error codes and
   retain native details for diagnostics.
-- Export with the native bridges included. The addon registers its Android AAR
+- Export with the native bridges included. The addon registers its Android AARs
   and dependencies with Gradle; Godot's iOS exporter discovers the bundled
-  XCFramework.
+  Game Center and StoreReview XCFrameworks.
 - Detect support at runtime instead of assuming similarly named platform
   features behave the same. Unsupported operations fail explicitly.
 - Save Godot values rather than manually encoding byte arrays. Typed cloud saves
@@ -78,6 +80,8 @@ google_achievement_ids = {"first_win": "CgkI..."}
 google_achievement_steps = {"first_win": 1}
 apple_leaderboard_ids = {"high_score": "com.example.high-score"}
 google_leaderboard_ids = {"high_score": "CgkI..."}
+apple_app_store_id = "123456789012"
+google_play_package_name = "com.example.game"
 ```
 
 Use only logical IDs in game code:
@@ -90,7 +94,20 @@ if not auth.ok:
 
 var achievement := await GameServices.unlock_achievement("first_win").wait()
 var score := await GameServices.submit_score("high_score", 42_000).wait()
+
+# This is an explicit fallback decision; the addon never redirects automatically.
+var review := await GameServices.request_in_app_review().wait()
+if not review.ok:
+	var store_page := await GameServices.open_store_review_page().wait()
 ```
+
+`request_in_app_review()` hands the request to StoreKit or Google Play In-App
+Review. A successful result means the native flow accepted the request; it does
+not mean a prompt was shown or a review was submitted. Use
+`open_store_review_page()` only for an explicit user action or fallback. The
+Apple and Google IDs above derive their store URLs; set the corresponding
+`*_store_review_url` fields when a game needs an explicit URL. Review requests
+do not require Game Center or Play Games authentication.
 
 An immediate validation failure is safe to await because
 `GameServicesRequest.wait()` first checks whether the request already
@@ -146,6 +163,13 @@ if GameServices.supports(GameServices.Capability.CLOUD_SAVES):
 Unsupported operations return `GameServicesResult.Code.UNSUPPORTED`; missing
 native plugins return `UNAVAILABLE`; missing logical ID mappings return
 `NOT_CONFIGURED`.
+
+Review support is independent of the provider capability mask:
+
+```gdscript
+if GameServices.supports_store_review():
+	var review := await GameServices.request_in_app_review().wait()
+```
 
 ## Development
 
