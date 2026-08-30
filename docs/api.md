@@ -12,8 +12,15 @@ else:
 ```
 
 `GameServicesResult` contains `ok`, `operation`, `data`, `error_code`,
-`error_message`, `platform_code`, and `provider`. Use `to_dictionary()` when a
-serializable representation is useful.
+`error_message`, `platform_code`, `provider`, and the originating `request_id`.
+Successful feature calls put
+typed value objects in `data`; `raw_data` (also available as `raw`) retains the
+provider-normalized payload for diagnostics. Use `to_dictionary()` when a
+serializable representation is useful. `is_success()`, `is_failure()`,
+`is_code()`, and `value_or()` avoid repeating status branching. The specialized
+`get_player()`, `get_achievement()`, `get_achievements()`, `get_score()`,
+`get_credentials()`, and `get_presentation()` helpers perform typed extraction
+and return `null` for failed results.
 
 Calling `shutdown()` completes every unfinished request with `Code.CANCELLED`.
 `initialize()` first shuts down the current provider, so replacing a provider
@@ -28,7 +35,7 @@ without duplicating authentication flow:
 - `session_state` is one of `SessionState.UNAVAILABLE`,
   `SessionState.SIGNED_OUT`, `SessionState.AUTHENTICATING`, or
   `SessionState.AUTHENTICATED`.
-- `current_player` is the cached normalized player dictionary. Use
+- `current_player` is the cached `GameServicesPlayer`. Use
   `get_current_player()` when a defensive copy is preferred.
 - `session_changed(state, player)` fires when either the state or cached player
   changes. The existing `authentication_changed(authenticated, player)` signal
@@ -46,8 +53,8 @@ if not ensured.ok:
 	push_warning(ensured.error_message)
 	return
 
-var player: Dictionary = ensured.data
-print("Signed in as ", player.get("display_name", player.id))
+var player: GameServicesPlayer = ensured.data
+print("Signed in as ", player.display_name if not player.display_name.is_empty() else player.id)
 ```
 
 `authenticate()` and `load_player()` remain explicit transport operations for
@@ -75,10 +82,57 @@ and Google identifiers live in `GameServicesConfig`. Google incremental
 achievements also need a configured total-step count so normalized progress in
 the range `0.0...1.0` can be converted to steps.
 
-Server credentials intentionally remain discriminated values. Apple returns
+Server credentials are `GameServicesServerCredentials` values with a stable
+`kind` discriminator. Apple returns
 `kind = "game_center_identity_signature"` with its signature tuple; Google
 returns `kind = "play_games_server_auth_code"` with a one-time authorization
-code.
+code. The value exposes provider-specific fields (`signature`, `salt`,
+`public_key_url`, `authorization_code`, and `token`) without flattening the two
+formats.
+
+Achievement operations return `GameServicesAchievement` values. Their `id` is
+the logical game-owned ID, `platform_id` is the resolved native ID,
+`progress` is normalized to `0.0...1.0`, and provider-specific fields such as
+Google's step counts remain available. `load_achievements()` returns a typed
+`Array[GameServicesAchievement]`. Score submissions return
+`GameServicesLeaderboardScore` with the logical leaderboard `id`, native
+`platform_id`, submitted integer `score`, and optional `rank`.
+
+Player operations return `GameServicesPlayer` values with `id`, `display_name`,
+`alias`, `provider`, and optional `avatar_uri`/`title`. `authenticate()` returns
+`GameServicesAuthentication`, whose `.player` is typed; `ensure_authenticated()`
+and `load_player()` return the player directly.
+
+Presentation operations—including achievement/leaderboard UI and store-review
+requests—return `GameServicesPresentationOutcome`. `accepted` (also exposed as
+`presentation_accepted`) means that the platform accepted the handoff; it does
+not claim that a prompt was displayed. Store-page results include `url` and
+`handoff`.
+
+All value objects expose a read-only-style `raw` field containing the original
+normalized dictionary. The result's `raw_data` is the complete original result
+payload, so normalized values do not discard provider details.
+
+### Request helpers
+
+`GameServicesRequest` keeps its original `id`/`request_id` and operation while
+helpers create observable wrappers with `parent_id` linking back to the source
+and `origin_id` identifying the original request. Results expose that origin as
+`request_id`, so composition does not lose correlation metadata.
+`map(transform)` receives a successful typed value and preserves failures;
+`then(callback)` receives the complete successful `GameServicesResult` and must
+return a request or result; `then_value(callback)` passes only the typed value.
+`with_timeout(seconds)` bounds the wrapper and returns a portable
+`PLATFORM_ERROR` timeout without pretending to cancel the native operation.
+`cancel()` completes a pending wrapper with `CANCELLED`.
+
+Retries are explicit and use `GameServicesRetryPolicy` (or a dictionary with
+`max_attempts`, `initial_delay_seconds`, `backoff_multiplier`,
+`max_delay_seconds`, and `retry_codes`). The policy counts the initial attempt;
+the factory is called only for subsequent attempts. Use
+`GameServicesRequest.run_with_retry(factory, policy)` to start a retryable flow,
+or `request.with_retry(factory, policy)` after an initial request. No helper
+implicitly authenticates or retries native mutations.
 
 ## Store reviews
 

@@ -4,7 +4,9 @@
 
 Games call one `GameServices` autoload. Every asynchronous operation returns a
 `GameServicesRequest`; awaiting `request.wait()` produces a
-`GameServicesResult`.
+`GameServicesResult`. Feature results expose small typed value objects at this
+boundary, while the result's `raw_data` and each value's `raw` preserve provider
+diagnostics.
 
 ```gdscript
 var request := GameServices.unlock_achievement("first_win")
@@ -15,7 +17,11 @@ if not result.ok:
 
 The request object avoids two common signal-only API problems: callers can
 associate completion with the operation they started, and immediate validation
-failures cannot race past an `await` connection.
+failures cannot race past an `await` connection. Its `map`, `then`, timeout,
+cancellation, and explicit retry helpers create linked wrappers while forwarding
+the original operation/provider/error metadata. Retry factories are opt-in, so
+native mutations and authentication are never replayed as an incidental helper
+side effect.
 
 The facade also owns authentication session coordination. `session_state` and
 `current_player` are updated from explicit auth/player requests and provider
@@ -32,7 +38,7 @@ Game code
     -> CloudSaveSlot (fixed-slot defaults and policy)
         -> CloudSaveStore (typed values, schema migration, revisions, conflicts)
             -> GameServices raw cloud-save transport
-    -> GameServices (logical IDs, validation, result normalization)
+    -> GameServices (logical IDs, validation, typed result normalization)
         -> AppleGameCenterProvider -> native GameCenter singleton
         -> GooglePlayGamesProvider -> native GodotPlayGameServices singleton
         -> MockGameServicesProvider -> deterministic editor/test state
@@ -116,7 +122,8 @@ binaries live in the project paths consumed by Godot's exporters.
 
 ## Escape hatches
 
-Normalized result dictionaries may contain `raw` provider data. This is a
-read-only escape hatch for features that do not justify a portable type yet. It
-does not expose the native singleton through the main API, keeping dependencies
-and lifecycle ownership inside providers.
+Typed normalized values retain their provider payload in `raw`, and every
+result retains the complete normalized payload in `raw_data`. These are
+read-only-style diagnostics for provider details that do not justify a portable
+field yet. They do not expose the native singleton through the main API,
+keeping dependencies and lifecycle ownership inside providers.

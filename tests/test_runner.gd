@@ -355,9 +355,18 @@ func _run() -> void:
 	var auth_result: GameServicesResult = await service.authenticate().wait()
 	_check(auth_result.ok and service.is_authenticated(), "Authentication updates state")
 	_check(auth_result.data.player.id == "mock-player", "Authentication returns normalized player data")
+	_check(
+		auth_result.data is GameServicesAuthentication
+		and auth_result.get_player().id == "mock-player"
+		and auth_result.raw_data is Dictionary,
+		"Authentication exposes a typed value and raw diagnostics"
+	)
 
 	var progress_result: GameServicesResult = await service.set_achievement_progress(&"first_win", 0.6).wait()
-	_check(progress_result.ok, "Achievement progress succeeds")
+	_check(
+		progress_result.ok and progress_result.data is GameServicesAchievement,
+		"Achievement progress succeeds with a typed value"
+	)
 	_check(progress_result.data.id == "first_win", "Achievement result uses the logical ID")
 
 	await service.set_achievement_progress(&"first_win", 0.2).wait()
@@ -367,7 +376,11 @@ func _run() -> void:
 		is_equal_approx(achievements_result.data[0].progress, 0.6),
 		"Achievement progress is monotonic"
 	)
-	_check(achievements_result.data[0].id == "first_win", "Loaded achievements use logical IDs")
+	_check(
+		achievements_result.data[0] is GameServicesAchievement
+		and achievements_result.data[0].id == "first_win",
+		"Loaded achievements use typed logical IDs"
+	)
 
 	var invalid_progress: GameServicesResult = await service.set_achievement_progress(&"first_win", 1.1).wait()
 	_check(
@@ -375,8 +388,86 @@ func _run() -> void:
 		"Out-of-range progress fails immediately without racing wait()"
 	)
 
-	var score_result: GameServicesResult = await service.submit_score(&"high_score", 42000).wait()
-	_check(score_result.ok and score_result.data.id == "high_score", "Scores use logical leaderboard IDs")
+	var score_request: GameServicesRequest = service.submit_score(&"high_score", 42000)
+	var score_result: GameServicesResult = await score_request.wait()
+	_check(
+		score_result.ok
+		and score_result.data is GameServicesLeaderboardScore
+		and score_result.get_score().id == "high_score",
+		"Scores use typed logical leaderboard IDs"
+	)
+
+	var mapped_result := score_result.map(func(value): return value.score / 2)
+	_check(
+		mapped_result.is_success()
+		and mapped_result.value == 21000
+		and mapped_result.operation == score_result.operation
+		and mapped_result.provider == score_result.provider,
+		"Result mapping preserves request metadata"
+	)
+	var dependent_result: GameServicesRequest = score_request.then(func(previous: GameServicesResult):
+		var dependent := GameServicesRequest.new(&"dependent_test")
+		dependent.complete(GameServicesResult.success(
+			&"dependent_test",
+			previous.get_score().score + 1,
+			&"dependent_provider"
+		))
+		return dependent
+	)
+	var dependent_value: GameServicesResult = await dependent_result.wait()
+	_check(
+		dependent_value.ok
+		and dependent_value.operation == &"dependent_test"
+		and dependent_value.value == 42001,
+		"Requests support dependent chaining"
+	)
+
+	var retry_state := {"attempts": 0}
+	var retry_result: GameServicesRequest = GameServicesRequest.run_with_retry(func():
+		retry_state.attempts += 1
+		var attempt := GameServicesRequest.new(&"retry_test")
+		attempt.complete(
+			GameServicesResult.failure(
+				&"retry_test",
+				GameServicesResult.Code.PLATFORM_ERROR,
+				"temporary",
+				&"retry_provider",
+				17
+			)
+			if retry_state.attempts == 1
+			else GameServicesResult.success(
+				&"retry_test",
+				"retried",
+				&"retry_provider"
+			)
+		)
+		return attempt
+	, {"max_attempts": 2})
+	var retried_value: GameServicesResult = await retry_result.wait()
+	_check(
+		retried_value.ok
+		and retry_state.attempts == 2
+		and retried_value.operation == &"retry_test"
+		and retried_value.provider == &"retry_provider",
+		"Explicit retry factories replay only opted-in failures"
+	)
+
+	var pending_helper := GameServicesRequest.new(&"helper_timeout")
+	var bounded := pending_helper.with_timeout(0.01)
+	var bounded_result: GameServicesResult = await bounded.wait()
+	_check(
+		bounded_result.error_code == GameServicesResult.Code.PLATFORM_ERROR
+		and bounded_result.operation == &"helper_timeout",
+		"Request timeout helpers are bounded"
+	)
+	var cancelled_helper := GameServicesRequest.new(&"helper_cancel")
+	var cancelled_helper_result := cancelled_helper.cancel("caller stopped", &"helper_provider")
+	_check(
+		cancelled_helper_result
+		and cancelled_helper.is_cancelled()
+		and cancelled_helper.result.provider == &"helper_provider",
+		"Request cancellation preserves the owner"
+	)
 
 	var bytes := "save payload".to_utf8_buffer()
 	var save_result: GameServicesResult = await service.save_game(

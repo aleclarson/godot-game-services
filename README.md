@@ -92,8 +92,8 @@ if not auth.ok:
 	push_warning(auth.error_message)
 	return
 
-var player: Dictionary = auth.data
-print("Signed in as ", player.get("display_name", player.id))
+var player: GameServicesPlayer = auth.data
+print("Signed in as ", player.display_name if not player.display_name.is_empty() else player.id)
 
 var achievement := await GameServices.unlock_achievement("first_win").wait()
 var score := await GameServices.submit_score("high_score", 42_000).wait()
@@ -118,9 +118,39 @@ completed.
 
 `ensure_authenticated()` is explicit and coalesces concurrent callers onto one
 authentication/player-load request. The facade exposes `session_state` and the
-cached `current_player`; provider authentication events update both, while
-provider replacement and shutdown clear the cache. Use `authenticate()` and
-`load_player()` directly when those transport steps need to remain separate.
+cached `current_player` as `GameServicesPlayer` values; provider authentication
+events update both, while provider replacement and shutdown clear the cache.
+Use `authenticate()` and `load_player()` directly when those transport steps
+need to remain separate. Explicit authentication results contain a
+`GameServicesAuthentication` with a typed `.player`.
+
+Achievement results are `GameServicesAchievement` values, achievement lists are
+typed `Array[GameServicesAchievement]`, score submissions return
+`GameServicesLeaderboardScore`, server verification returns
+`GameServicesServerCredentials`, and UI/review handoffs return
+`GameServicesPresentationOutcome`. Every typed value keeps its provider payload
+in `.raw`; the enclosing result exposes the same diagnostics as `.raw_data`.
+
+Requests have small opt-in composition helpers. `map()` transforms a successful
+typed value, `then()` starts a dependent request only after success, and
+`with_timeout()` bounds how long a wrapper waits. Retry requires an explicit
+factory, so mutations and authentication are never replayed implicitly:
+
+```gdscript
+var score := GameServices.submit_score("high_score", 42_000)
+var checked := score.with_timeout(2.0).with_retry(
+	func(): return GameServices.submit_score("high_score", 42_000),
+	{"max_attempts": 2, "initial_delay_seconds": 0.25}
+)
+var result := await checked.wait()
+if result.is_success():
+	var value: GameServicesLeaderboardScore = result.get_score()
+```
+
+Call `request.cancel()` (or `GameServices.cancel_request(request)`) to finish a
+wrapper with `Code.CANCELLED`. Failed results remain unchanged through mapping,
+chaining, timeout, and retry helpers; inspect `operation`, `provider`,
+`error_code`, `platform_code`, and `raw_data` for diagnostics.
 
 For a fixed save slot, use a configured handle. It keeps the slot name and its
 schema settings out of gameplay code:

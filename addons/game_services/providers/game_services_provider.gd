@@ -3,7 +3,7 @@ extends Node
 
 ## Adapter boundary implemented by native and mock providers.
 
-signal authentication_changed(authenticated: bool, player: Dictionary)
+signal authentication_changed(authenticated: bool, player: Variant)
 
 enum Capability {
 	AUTHENTICATION = 1 << 0,

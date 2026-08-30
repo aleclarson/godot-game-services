@@ -3,8 +3,8 @@ extends Node
 ## Normalized entry point for Apple Game Center and Google Play Games Services.
 
 signal provider_changed(provider_name: StringName, capabilities: int)
-signal authentication_changed(authenticated: bool, player: Dictionary)
-signal session_changed(state: SessionState, player: Dictionary)
+signal authentication_changed(authenticated: bool, player: Variant)
+signal session_changed(state: SessionState, player: Variant)
 signal request_finished(request: GameServicesRequest, result: GameServicesResult)
 
 enum Capability {
@@ -41,7 +41,7 @@ var _provider_available: bool = false
 var _active_requests: Dictionary[int, GameServicesRequest] = {}
 var _request_notifications: Dictionary[int, bool] = {}
 var session_state: SessionState = SessionState.UNAVAILABLE
-var current_player: Dictionary = {}
+var current_player: GameServicesPlayer = GameServicesPlayer.new()
 var _ensure_request: GameServicesRequest
 var _ensure_provider: GameServicesProvider
 var _authentication_request_providers: Dictionary[int, GameServicesProvider] = {}
@@ -127,9 +127,43 @@ func is_authenticated() -> bool:
 	return _has_provider() and session_state == SessionState.AUTHENTICATED
 
 
+## Request-composition conveniences kept on the facade for code that prefers a
+## single GameServices entry point. These helpers are opt-in and do not start
+## authentication or retry a provider operation by themselves.
+func with_timeout(request: GameServicesRequest, seconds: float) -> GameServicesRequest:
+	if request == null:
+		return _invalid_request(&"with_timeout", "A request is required")
+	return request.with_timeout(seconds)
+
+
+func retry_request(
+	request: GameServicesRequest,
+	operation_factory: Callable,
+	policy: Variant = null
+) -> GameServicesRequest:
+	if request == null:
+		return _invalid_request(&"retry_request", "A request is required")
+	return request.with_retry(operation_factory, policy)
+
+
+func chain_request(request: GameServicesRequest, next: Callable) -> GameServicesRequest:
+	if request == null:
+		return _invalid_request(&"chain_request", "A request is required")
+	return request.then(next)
+
+
+func cancel_request(
+	request: GameServicesRequest,
+	message: String = "Request cancelled"
+) -> bool:
+	if request == null:
+		return false
+	return request.cancel(message, provider_name())
+
+
 ## Returns a defensive copy of the most recently loaded normalized player.
-func get_current_player() -> Dictionary:
-	return current_player.duplicate(true)
+func get_current_player() -> GameServicesPlayer:
+	return current_player.duplicate_player()
 
 
 ## Returns one request for the current authenticated player.
@@ -168,13 +202,19 @@ func supports_store_review() -> bool:
 func request_in_app_review() -> GameServicesRequest:
 	if not is_instance_valid(store_review):
 		return _unavailable_request(&"request_in_app_review")
-	return _track(store_review.request_in_app_review())
+	return _proxy_request(
+		store_review.request_in_app_review(),
+		Callable(self, "_normalize_presentation_result")
+	)
 
 
 func open_store_review_page() -> GameServicesRequest:
 	if not is_instance_valid(store_review):
 		return _unavailable_request(&"open_store_review_page")
-	return _track(store_review.open_store_review_page())
+	return _proxy_request(
+		store_review.open_store_review_page(),
+		Callable(self, "_normalize_presentation_result")
+	)
 
 
 func authenticate() -> GameServicesRequest:
@@ -183,7 +223,7 @@ func authenticate() -> GameServicesRequest:
 	_set_session_state(SessionState.AUTHENTICATING, current_player, false)
 	var source := provider.authenticate()
 	_observe_authentication_request(source, provider)
-	return _track(source)
+	return _proxy_request(source, Callable(self, "_normalize_authentication_result"))
 
 
 func load_player() -> GameServicesRequest:
@@ -191,7 +231,7 @@ func load_player() -> GameServicesRequest:
 		return _unavailable_request(&"load_player")
 	var source := provider.load_player()
 	_observe_player_request(source, provider)
-	return _track(source)
+	return _proxy_request(source, Callable(self, "_normalize_player_result"))
 
 
 func unlock_achievement(logical_id: StringName) -> GameServicesRequest:
@@ -251,14 +291,20 @@ func submit_score(logical_id: StringName, score: int) -> GameServicesRequest:
 func show_achievements() -> GameServicesRequest:
 	if not _has_provider():
 		return _unavailable_request(&"show_achievements")
-	return _track(provider.show_achievements())
+	return _proxy_request(
+		provider.show_achievements(),
+		Callable(self, "_normalize_presentation_result")
+	)
 
 
 func show_leaderboards(logical_id: StringName = &"") -> GameServicesRequest:
 	if not _has_provider():
 		return _unavailable_request(&"show_leaderboards")
 	if logical_id.is_empty():
-		return _track(provider.show_leaderboards())
+		return _proxy_request(
+			provider.show_leaderboards(),
+			Callable(self, "_normalize_presentation_result")
+		)
 	var resolution := _resolve_identifier(&"show_leaderboards", logical_id, false)
 	if resolution is GameServicesRequest:
 		return resolution
@@ -273,7 +319,10 @@ func show_leaderboards(logical_id: StringName = &"") -> GameServicesRequest:
 func request_server_credentials(options: Dictionary = {}) -> GameServicesRequest:
 	if not _has_provider():
 		return _unavailable_request(&"request_server_credentials")
-	return _track(provider.request_server_credentials(options))
+	return _proxy_request(
+		provider.request_server_credentials(options),
+		Callable(self, "_normalize_credentials_result")
+	)
 
 
 func save_game(
@@ -437,7 +486,7 @@ func _completed_player_request() -> GameServicesRequest:
 	var request := GameServicesRequest.new(&"ensure_authenticated")
 	request.complete(GameServicesResult.success(
 		&"ensure_authenticated",
-		current_player.duplicate(true),
+		current_player.duplicate_player(),
 		provider_name()
 	))
 	return _track(request)
@@ -501,7 +550,8 @@ func _on_ensure_player_completed(
 		_set_session_state(SessionState.SIGNED_OUT, {}, false)
 		_complete_ensure_result(_session_result(result))
 		return
-	if result.data is not Dictionary or (result.data as Dictionary).is_empty():
+	var player := _player_from_result(result)
+	if player.is_empty():
 		_set_session_state(SessionState.SIGNED_OUT, {}, false)
 		_complete_ensure_result(GameServicesResult.failure(
 			&"ensure_authenticated",
@@ -510,7 +560,7 @@ func _on_ensure_player_completed(
 			owner.provider_name()
 		))
 		return
-	_set_session_state(SessionState.AUTHENTICATED, result.data, false)
+	_set_session_state(SessionState.AUTHENTICATED, player, false)
 	_complete_ensure_success()
 
 
@@ -519,7 +569,7 @@ func _complete_ensure_success() -> void:
 		return
 	_ensure_request.complete(GameServicesResult.success(
 		&"ensure_authenticated",
-		current_player.duplicate(true),
+		current_player.duplicate_player(),
 		provider_name()
 	))
 
@@ -534,7 +584,7 @@ func _session_result(result: GameServicesResult) -> GameServicesResult:
 	if result.ok:
 		return GameServicesResult.success(
 			&"ensure_authenticated",
-			current_player.duplicate(true),
+			current_player.duplicate_player(),
 			result.provider
 		)
 	return GameServicesResult.failure(
@@ -596,15 +646,22 @@ func _update_session_from_authentication_result(
 		_set_session_state(SessionState.SIGNED_OUT, {}, false)
 
 
-func _player_from_authentication_result(result: GameServicesResult) -> Dictionary:
-	if result.data is not Dictionary:
-		return {}
-	var payload: Dictionary = result.data
-	if payload.get("player") is Dictionary:
-		return (payload["player"] as Dictionary).duplicate(true)
-	if payload.has("id"):
-		return payload.duplicate(true)
-	return {}
+func _player_from_authentication_result(result: GameServicesResult) -> GameServicesPlayer:
+	if result.data is GameServicesAuthentication:
+		return result.data.player
+	if result.data is GameServicesPlayer:
+		return result.data
+	if result.data is Dictionary:
+		var payload: Dictionary = result.data
+		if payload.get("player") is Dictionary:
+			return GameServicesPlayer.from_dictionary(payload["player"], result.provider)
+		if payload.has("id"):
+			return GameServicesPlayer.from_dictionary(payload, result.provider)
+	return GameServicesPlayer.new()
+
+
+func _player_from_result(result: GameServicesResult) -> GameServicesPlayer:
+	return _player_from_authentication_result(result)
 
 
 func _observe_player_request(
@@ -629,33 +686,37 @@ func _on_player_request_completed(
 	_player_request_providers.erase(request.id)
 	if owner != provider or not _has_provider() or not result.ok:
 		return
-	if result.data is Dictionary and not (result.data as Dictionary).is_empty():
-		_set_session_state(SessionState.AUTHENTICATED, result.data, false)
+	var player := _player_from_result(result)
+	if not player.is_empty():
+		_set_session_state(SessionState.AUTHENTICATED, player, false)
 
 
 func _set_session_state(
 	state: SessionState,
-	player: Dictionary,
+	player: Variant,
 	emit_authentication: bool
 ) -> void:
-	var next_player := player.duplicate(true)
-	var changed := session_state != state or current_player != next_player
+	var next_player := GameServicesPlayer.from_dictionary(player, provider_name())
+	var changed := (
+		session_state != state
+		or current_player.to_dictionary() != next_player.to_dictionary()
+	)
 	session_state = state
 	current_player = next_player
 	if changed:
-		session_changed.emit(session_state, current_player.duplicate(true))
+		session_changed.emit(session_state, current_player.duplicate_player())
 	if emit_authentication:
 		authentication_changed.emit(
 			session_state == SessionState.AUTHENTICATED,
-		current_player.duplicate(true)
-	)
+		current_player.duplicate_player()
+		)
 
 
 func _clear_session() -> void:
 	var had_session := session_state != SessionState.UNAVAILABLE or not current_player.is_empty()
 	_set_session_state(SessionState.UNAVAILABLE, {}, false)
 	if had_session:
-		authentication_changed.emit(false, {})
+		authentication_changed.emit(false, current_player.duplicate_player())
 
 
 func _resolve_identifier(
@@ -697,44 +758,133 @@ func _identifier_result(
 	logical_id: StringName,
 	platform_id: String
 ) -> GameServicesResult:
+	if not result.ok:
+		return result
 	var data: Dictionary = result.data.duplicate(true) if result.data is Dictionary else {}
 	data["id"] = String(logical_id)
 	data["platform_id"] = platform_id
-	return _copy_result_with_data(result, data)
+	match result.operation:
+		&"unlock_achievement", &"set_achievement_progress":
+			return _copy_result_with_data(
+				result,
+				GameServicesAchievement.from_dictionary(data, result.provider, String(logical_id)),
+				result.raw_data
+			)
+		&"submit_score":
+			return _copy_result_with_data(
+				result,
+				GameServicesLeaderboardScore.from_dictionary(data, result.provider, String(logical_id)),
+				result.raw_data
+			)
+		&"show_leaderboards":
+			return _copy_result_with_data(
+				result,
+				GameServicesPresentationOutcome.from_dictionary(data, result.operation, result.provider),
+				result.raw_data
+			)
+	return _copy_result_with_data(result, data, result.raw_data)
 
 
 func _normalize_achievement_result(result: GameServicesResult) -> GameServicesResult:
-	if not result.ok or result.data is not Array:
+	if not result.ok or result.data is GameServicesAchievementCollection:
 		return result
-	var achievements: Array[Dictionary] = []
+	if result.data is not Array:
+		return result
+	var achievements: Array[GameServicesAchievement] = []
 	for value: Variant in result.data:
-		if value is not Dictionary:
+		if value is GameServicesAchievement:
+			achievements.append(value)
 			continue
-		var achievement: Dictionary = value.duplicate(true)
+		if not value is Dictionary:
+			continue
+		var achievement: Dictionary = value
 		var platform_id := str(achievement.get("platform_id", ""))
-		achievement["id"] = config.logical_achievement_id(platform_id, provider_name())
-		achievements.append(achievement)
-	return _copy_result_with_data(result, achievements)
+		var logical_id := (
+			config.logical_achievement_id(platform_id, provider_name())
+			if config != null
+			else str(achievement.get("id", ""))
+		)
+		achievements.append(GameServicesAchievement.from_dictionary(
+			achievement,
+			result.provider,
+			logical_id
+		))
+	return _copy_result_with_data(result, achievements, result.raw_data)
+
+
+func _normalize_player_result(result: GameServicesResult) -> GameServicesResult:
+	if not result.ok or result.data is GameServicesPlayer:
+		return result
+	return _copy_result_with_data(
+		result,
+		GameServicesPlayer.from_dictionary(result.data, result.provider),
+		result.raw_data
+	)
+
+
+func _normalize_authentication_result(result: GameServicesResult) -> GameServicesResult:
+	if not result.ok or result.data is GameServicesAuthentication:
+		return result
+	return _copy_result_with_data(
+		result,
+		GameServicesAuthentication.from_dictionary(result.data, result.provider),
+		result.raw_data
+	)
+
+
+func _normalize_credentials_result(result: GameServicesResult) -> GameServicesResult:
+	if not result.ok or result.data is GameServicesServerCredentials:
+		return result
+	return _copy_result_with_data(
+		result,
+		GameServicesServerCredentials.from_dictionary(result.data, result.provider),
+		result.raw_data
+	)
+
+
+func _normalize_presentation_result(result: GameServicesResult) -> GameServicesResult:
+	if not result.ok or result.data is GameServicesPresentationOutcome:
+		return result
+	return _copy_result_with_data(
+		result,
+		GameServicesPresentationOutcome.from_dictionary(
+			result.data,
+			result.operation,
+			result.provider
+		),
+		result.raw_data
+	)
 
 
 func _copy_result_with_data(
 	result: GameServicesResult,
-	data: Variant
+	data: Variant,
+	raw_data: Variant = null
 ) -> GameServicesResult:
+	var diagnostics := result.raw_data if raw_data == null else raw_data
 	if result.ok:
-		return GameServicesResult.success(result.operation, data, result.provider)
-	return GameServicesResult.failure(
+		var success := GameServicesResult.success(result.operation, data, result.provider, diagnostics)
+		success.request_id = result.request_id
+		return success
+	var failure := GameServicesResult.failure(
 		result.operation,
 		result.error_code,
 		result.error_message,
 		result.provider,
 		result.platform_code,
-		data
+		data,
+		diagnostics
 	)
+	failure.request_id = result.request_id
+	return failure
 
 
 func _proxy_request(source: GameServicesRequest, transform: Callable) -> GameServicesRequest:
 	var target := GameServicesRequest.new(source.operation)
+	target.parent_id = source.id
+	target.origin_id = source.origin_id
+	target.provider = source.provider
+	_track(source, false)
 	if source.is_completed:
 		call_deferred("_finish_proxy_request", source.result, target, transform)
 	else:
@@ -759,6 +909,8 @@ func _track(
 	request: GameServicesRequest,
 	emit_finished: bool = true
 ) -> GameServicesRequest:
+	if request.provider.is_empty():
+		request.provider = provider_name()
 	if request.is_completed:
 		if emit_finished:
 			call_deferred("_emit_request_finished", request, request.result)
@@ -823,14 +975,14 @@ func _cancel_pending_requests(cancelled_provider: StringName) -> void:
 	_ensure_provider = null
 
 
-func _on_authentication_changed(authenticated: bool, player: Dictionary) -> void:
+func _on_authentication_changed(authenticated: bool, player: Variant) -> void:
 	if not _has_provider():
 		return
 	if authenticated:
 		_set_session_state(SessionState.AUTHENTICATED, player, false)
 	else:
 		_set_session_state(SessionState.SIGNED_OUT, {}, false)
-	authentication_changed.emit(authenticated, current_player.duplicate(true))
+	authentication_changed.emit(authenticated, current_player.duplicate_player())
 
 
 func _unavailable_request(operation: StringName) -> GameServicesRequest:
