@@ -16,6 +16,8 @@ enum Code {
 	NOT_FOUND = 9,
 	INTERNAL_ERROR = 10,
 	INVALID_DATA = 11,
+	## A presentation is already owned by another active request.
+	BUSY = 12,
 }
 
 var ok: bool = false
@@ -155,6 +157,14 @@ func is_error_code(code: Code) -> bool:
 
 func is_cancelled() -> bool:
 	return is_code(Code.CANCELLED)
+
+
+func is_busy() -> bool:
+	return is_code(Code.BUSY)
+
+
+func busy() -> bool:
+	return is_busy()
 
 
 func is_retryable() -> bool:

@@ -133,6 +133,13 @@ Apple and Google IDs above derive their store URLs; set the corresponding
 `*_store_review_url` fields when a game needs an explicit URL. Review requests
 do not require Game Center or Play Games authentication.
 
+All achievement UI, leaderboard UI, in-app review, and explicit store-page
+requests share one presentation coordinator. While one handoff is pending, a
+second request completes immediately with `GameServicesResult.Code.BUSY`; the
+provider is not called. Provider replacement and shutdown cancel the active
+handoff. A successful review result still means only that StoreKit or Google
+Play accepted the handoff, never that a prompt was displayed.
+
 An immediate validation failure is safe to await because
 `GameServicesRequest.wait()` first checks whether the request already
 completed.
@@ -230,6 +237,29 @@ Review support is independent of the provider capability mask:
 if GameServices.supports_store_review():
 	var review := await GameServices.request_in_app_review().wait()
 ```
+
+## Mock provider controls
+
+`MockGameServicesProvider` keeps the editor path asynchronous and can be made
+deterministic for headless tests. Configure it before `GameServices.initialize`:
+
+```gdscript
+var mock := MockGameServicesProvider.new()
+mock.set_operation_script("load_player", [
+	{"ok": false, "error_code": "platform_error", "message": "offline"},
+	{"ok": true, "payload": {"id": "test-player", "display_name": "Test"}},
+])
+mock.set_operation_delay("show_achievements", 0.25)
+mock.set_capability_mask(GameServices.Capability.AUTHENTICATION)
+```
+
+Script entries may be `GameServicesResult`, booleans, or dictionaries with
+`ok`/`success`, `data`/`payload`, error metadata, and `delay_seconds`. Arrays
+are consumed in order and reuse their final entry. `set_operation_payload`,
+`set_presentation_outcome`, `set_account`/`set_authenticated`, and capability
+helpers cover common fixtures. `get_call_log()` (also `call_log`) returns a
+defensive call trace; `reset()` clears account/state and the trace while
+preserving controls, and `reset_controls()` clears both.
 
 ## Development
 

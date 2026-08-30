@@ -37,6 +37,14 @@ var config: GameServicesConfig
 var provider: GameServicesProvider
 var cloud_saves: CloudSaveStore
 var store_review: StoreReviewService
+var presentation_coordinator: GameServicesPresentationCoordinator
+## Short alias for callers that prefer the noun used by the API docs.
+var presentations: GameServicesPresentationCoordinator:
+	get:
+		return presentation_coordinator
+var presentation: GameServicesPresentationCoordinator:
+	get:
+		return presentation_coordinator
 var achievement_handles: GameServicesAchievementHandleCollection
 var leaderboard_handles: GameServicesLeaderboardHandleCollection
 ## Scoped achievement handles. The alias keeps the concise collection name
@@ -62,6 +70,7 @@ var _player_request_providers: Dictionary[int, GameServicesProvider] = {}
 func _init() -> void:
 	cloud_saves = CloudSaveStore.new(self)
 	store_review = StoreReviewService.new()
+	presentation_coordinator = GameServicesPresentationCoordinator.new()
 	achievement_handles = GameServicesAchievementHandles.new(self)
 	leaderboard_handles = GameServicesLeaderboardHandles.new(self)
 
@@ -119,6 +128,10 @@ func initialize(
 
 func shutdown() -> void:
 	var cancelled_provider := provider_name()
+	if is_instance_valid(presentation_coordinator):
+		presentation_coordinator.cancel_active(
+			"Game services shut down before the presentation completed"
+		)
 	cloud_saves._cancel_pending_requests(cancelled_provider)
 	# Mark the facade unavailable before completing requests. Some providers
 	# complete their transport request synchronously when they are cancelled;
@@ -286,20 +299,36 @@ func supports_store_review() -> bool:
 
 
 func request_in_app_review() -> GameServicesRequest:
+	var busy := _presentation_busy_request(
+		&"request_in_app_review",
+		store_review.provider_name() if is_instance_valid(store_review) else &""
+	)
+	if busy != null:
+		return busy
 	if not is_instance_valid(store_review):
 		return _unavailable_request(&"request_in_app_review")
-	return _proxy_request(
-		store_review.request_in_app_review(),
-		Callable(self, "_normalize_presentation_result")
+	return _presentation_request(
+		&"request_in_app_review",
+		func(): return store_review.request_in_app_review(),
+		Callable(self, "_normalize_presentation_result"),
+		store_review.provider_name()
 	)
 
 
 func open_store_review_page() -> GameServicesRequest:
+	var busy := _presentation_busy_request(
+		&"open_store_review_page",
+		store_review.provider_name() if is_instance_valid(store_review) else &""
+	)
+	if busy != null:
+		return busy
 	if not is_instance_valid(store_review):
 		return _unavailable_request(&"open_store_review_page")
-	return _proxy_request(
-		store_review.open_store_review_page(),
-		Callable(self, "_normalize_presentation_result")
+	return _presentation_request(
+		&"open_store_review_page",
+		func(): return store_review.open_store_review_page(),
+		Callable(self, "_normalize_presentation_result"),
+		store_review.provider_name()
 	)
 
 
@@ -420,6 +449,9 @@ func submit_score(logical_id: StringName, score: int) -> GameServicesRequest:
 
 
 func show_achievements() -> GameServicesRequest:
+	var busy := _presentation_busy_request(&"show_achievements", provider_name())
+	if busy != null:
+		return busy
 	if not _has_provider():
 		return _unavailable_request(&"show_achievements")
 	if not supports(Capability.PLATFORM_UI):
@@ -427,13 +459,18 @@ func show_achievements() -> GameServicesRequest:
 			&"show_achievements",
 			"The active provider does not support achievement UI"
 		)
-	return _proxy_request(
-		provider.show_achievements(),
-		Callable(self, "_normalize_presentation_result")
+	return _presentation_request(
+		&"show_achievements",
+		func(): return provider.show_achievements(),
+		Callable(self, "_normalize_presentation_result"),
+		provider_name()
 	)
 
 
 func show_leaderboards(logical_id: StringName = &"") -> GameServicesRequest:
+	var busy := _presentation_busy_request(&"show_leaderboards", provider_name())
+	if busy != null:
+		return busy
 	if not _has_provider():
 		return _unavailable_request(&"show_leaderboards")
 	if not supports(Capability.PLATFORM_UI):
@@ -442,9 +479,11 @@ func show_leaderboards(logical_id: StringName = &"") -> GameServicesRequest:
 			"The active provider does not support leaderboard UI"
 		)
 	if logical_id.is_empty():
-		return _proxy_request(
-			provider.show_leaderboards(),
-			Callable(self, "_normalize_presentation_result")
+		return _presentation_request(
+			&"show_leaderboards",
+			func(): return provider.show_leaderboards(),
+			Callable(self, "_normalize_presentation_result"),
+			provider_name()
 		)
 	var resolution := _resolve_identifier(
 		&"show_leaderboards",
@@ -455,10 +494,14 @@ func show_leaderboards(logical_id: StringName = &"") -> GameServicesRequest:
 	if resolution is GameServicesRequest:
 		return resolution
 	var platform_id: String = resolution
-	return _decorate_identifier(
-		provider.show_leaderboards(platform_id),
-		logical_id,
-		platform_id
+	return _presentation_request(
+		&"show_leaderboards",
+		func(): return provider.show_leaderboards(platform_id),
+		Callable(self, "_normalize_presentation_identifier_result").bind(
+			logical_id,
+			platform_id
+		),
+		provider_name()
 	)
 
 
@@ -1048,6 +1091,25 @@ func _normalize_presentation_result(result: GameServicesResult) -> GameServicesR
 	)
 
 
+func _normalize_presentation_identifier_result(
+	result: GameServicesResult,
+	logical_id: StringName,
+	platform_id: String
+) -> GameServicesResult:
+	var normalized := _normalize_presentation_result(result)
+	if not normalized.ok or not normalized.data is GameServicesPresentationOutcome:
+		return normalized
+	var outcome: GameServicesPresentationOutcome = normalized.data
+	var copied := GameServicesPresentationOutcome.from_dictionary(
+		outcome.to_dictionary(),
+		normalized.operation,
+		normalized.provider
+	)
+	copied.platform_id = platform_id
+	copied.logical_id = logical_id
+	return _copy_result_with_data(normalized, copied, normalized.raw_data)
+
+
 func _copy_result_with_data(
 	result: GameServicesResult,
 	data: Variant,
@@ -1085,6 +1147,33 @@ func _proxy_request(source: GameServicesRequest, transform: Callable) -> GameSer
 			CONNECT_ONE_SHOT
 		)
 	return _track(target)
+
+
+func _presentation_request(
+	operation: StringName,
+	source_factory: Callable,
+	transform: Callable,
+	owner: StringName
+) -> GameServicesRequest:
+	if not is_instance_valid(presentation_coordinator):
+		return _unavailable_request(operation)
+	var request := presentation_coordinator.start(
+		operation,
+		source_factory,
+		transform,
+		owner
+	)
+	return _track(request)
+
+
+func _presentation_busy_request(
+	operation: StringName,
+	owner: StringName
+) -> GameServicesRequest:
+	if not is_instance_valid(presentation_coordinator):
+		return null
+	var request := presentation_coordinator.busy_request(operation, owner)
+	return _track(request) if request != null else null
 
 
 func _finish_proxy_request(

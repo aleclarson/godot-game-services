@@ -601,6 +601,7 @@ func _run() -> void:
 	await _test_google_adapter(test_config)
 	await _test_apple_adapter(test_config)
 	await _test_store_review(test_config)
+	await _test_mock_controls_and_presentation(test_config)
 
 	if _failures.is_empty():
 		print("PASS: all game-services tests")
@@ -929,6 +930,94 @@ func _test_cloud_save_conflicts(test_config: GameServicesConfig) -> void:
 	service.queue_free()
 
 
+func _test_mock_controls_and_presentation(test_config: GameServicesConfig) -> void:
+	var provider := MockGameServicesProvider.new()
+	var service := GameServicesScript.new()
+	service.auto_initialize = false
+	root.add_child(service)
+	var initialized := service.initialize(test_config, provider)
+	_check(initialized.ok, "Configurable mock provider initializes")
+	var auth: GameServicesResult = await service.authenticate().wait()
+	_check(auth.ok, "Configurable mock provider authenticates")
+
+	provider.clear_call_log()
+	provider.set_operation_script(&"submit_score", [
+		{
+			"ok": false,
+			"error_code": "platform_error",
+			"error_message": "offline",
+			"platform_code": 17,
+		},
+		{
+			"ok": true,
+			"payload": {"platform_id": "CgkI_high_score", "score": 9},
+		},
+	])
+	var failed_score: GameServicesResult = await service.submit_score(&"high_score", 8).wait()
+	var successful_score: GameServicesResult = await service.submit_score(&"high_score", 9).wait()
+	_check(
+		failed_score.error_code == GameServicesResult.Code.PLATFORM_ERROR
+		and failed_score.platform_code == 17,
+		"Mock operation scripts preserve portable and platform errors"
+	)
+	_check(
+		successful_score.ok
+		and successful_score.data is GameServicesLeaderboardScore
+		and successful_score.data.score == 9
+		and provider.call_log.size() == 2,
+		"Mock operation scripts consume deterministic outcomes and record calls"
+	)
+
+	provider.set_capabilities(GameServicesScript.Capability.AUTHENTICATION)
+	var unsupported: GameServicesResult = await service.submit_score(&"high_score", 10).wait()
+	_check(
+		unsupported.error_code == GameServicesResult.Code.UNSUPPORTED,
+		"Mock capability masks expose unsupported operations"
+	)
+	provider.set_capabilities(MockGameServicesProvider.DEFAULT_CAPABILITIES)
+	provider.set_account({
+		"id": "second-player",
+		"display_name": "Second Player",
+		"alias": "Second",
+	}, true)
+	_check(
+		service.current_player.id == "second-player",
+		"Mock account changes emit normalized authentication events"
+	)
+
+	provider.set_operation_delay(&"show_achievements", 0.05)
+	var active_presentation := service.show_achievements()
+	var busy_presentation: GameServicesResult = await service.show_leaderboards().wait()
+	_check(
+		busy_presentation.error_code == GameServicesResult.Code.BUSY
+		and provider.call_log.filter(func(call): return call.operation == "show_leaderboards").is_empty(),
+		"Presentation coordinator rejects overlapping UI without provider calls"
+	)
+	var presentation_result: GameServicesResult = await active_presentation.wait()
+	_check(
+		presentation_result.ok
+		and presentation_result.data is GameServicesPresentationOutcome,
+		"Presentation coordinator returns typed handoff outcomes"
+	)
+
+	provider.set_operation_delay(&"show_achievements", 1.0)
+	var cancelled_presentation := service.show_achievements()
+	var explicitly_cancelled := service.cancel_request(cancelled_presentation)
+	var explicit_result: GameServicesResult = await cancelled_presentation.wait()
+	_check(explicitly_cancelled and explicit_result.error_code == GameServicesResult.Code.CANCELLED,
+		"Cancelling a presentation releases coordinator ownership")
+	var lifecycle_presentation := service.show_achievements()
+	service.shutdown()
+	var cancelled_result: GameServicesResult = await lifecycle_presentation.wait()
+	_check(
+		cancelled_result.error_code == GameServicesResult.Code.CANCELLED,
+		"Presentation coordinator cancels its owner during shutdown"
+	)
+	provider.reset()
+	_check(provider.call_log.is_empty(), "Mock reset clears deterministic call inspection")
+	service.queue_free()
+
+
 func _migrate_cloud_save_v1(value: Variant) -> Variant:
 	var migrated: Dictionary = value.duplicate(true) if value is Dictionary else {}
 	migrated["difficulty"] = "normal"
@@ -1214,6 +1303,18 @@ func _test_store_review(test_config: GameServicesConfig) -> void:
 		and android_fake.calls[0].method == "requestInAppReview",
 		"Android review requests use the native plugin method"
 	)
+	var busy_store_page: GameServicesResult = await android_service.open_store_review_page().wait()
+	_check(
+		busy_store_page.error_code == GameServicesResult.Code.BUSY
+		and android_fake.calls.size() == 1,
+		"Android store-page navigation is rejected while review is active"
+	)
+	android_fake.reviewFlowCompleted.emit(true, 0, "")
+	var android_result: GameServicesResult = await android_request.wait()
+	_check(
+		android_result.ok and android_result.data.handoff == "native_review_flow",
+		"Android review requests normalize Play flow completion"
+	)
 	var android_store_page: GameServicesResult = await android_service.open_store_review_page().wait()
 	_check(
 		android_store_page.ok
@@ -1221,12 +1322,6 @@ func _test_store_review(test_config: GameServicesConfig) -> void:
 		and android_fake.calls.size() == 2
 		and android_fake.calls[1].method == "openStoreReviewPage",
 		"Android store-page navigation uses the dedicated native plugin"
-	)
-	android_fake.reviewFlowCompleted.emit(true, 0, "")
-	var android_result: GameServicesResult = await android_request.wait()
-	_check(
-		android_result.ok and android_result.data.handoff == "native_review_flow",
-		"Android review requests normalize Play flow completion"
 	)
 
 	android_service.shutdown()

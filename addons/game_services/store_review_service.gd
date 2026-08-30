@@ -67,6 +67,17 @@ func initialize(p_config: GameServicesConfig) -> GameServicesResult:
 
 func shutdown() -> void:
 	_disconnect_review_signal()
+	var owner := provider_name()
+	for value: Variant in _pending_review_requests:
+		var request := value as GameServicesRequest
+		if request == null or request.is_completed:
+			continue
+		request.complete(GameServicesResult.failure(
+			request.operation,
+			GameServicesResult.Code.CANCELLED,
+			"Store review shut down before the handoff completed",
+			owner
+		))
 	_pending_review_requests.clear()
 	_native_plugin = null
 	_platform = &"unavailable"

@@ -194,6 +194,42 @@ The request result contains the normalized operation and native platform
 details; the explicit page result includes the destination URL and whether the
 native bridge accepted the handoff.
 
+### Presentation coordination
+
+`GameServices.presentation_coordinator` (also available as
+`GameServices.presentations`) owns one presentation slot across
+`show_achievements()`, `show_leaderboards()`, `request_in_app_review()`, and
+`open_store_review_page()`. A second request while that slot is occupied is
+completed immediately with `GameServicesResult.Code.BUSY` and does not call a
+provider. `active_request`, `active_operation`, `active_provider`, and
+`is_active` are available for UI state, and `active_changed(active, operation)`
+can drive a loading indicator. Provider replacement or shutdown cancels the
+active request with `Code.CANCELLED`.
+
+The coordinator does not authenticate on behalf of a review request. A review
+or store-page result still describes a platform handoff: `accepted` means the
+platform accepted the request, not that a prompt was displayed or a review was
+submitted. Opening a store page remains an explicit caller decision.
+
+### Mock provider controls
+
+`MockGameServicesProvider` is an asynchronous, stateful provider for editor and
+headless tests. Configure deterministic behavior with
+`set_operation_script(operation, entries)`, `set_operation_delay(operation,
+seconds)`, and `set_operation_payload(operation, payload)`. Script entries can
+be a `GameServicesResult`, a boolean, or a dictionary containing `ok`/`success`,
+`data`/`payload`, `error_code`, `error_message`, `platform_code`, and
+`delay_seconds`. Array scripts are consumed in order and reuse their last
+entry. `set_operation_success()` and `set_operation_failure()` are shorthand
+helpers.
+
+Use `set_capability_mask()`, `set_capability()`, `set_account()`,
+`set_authenticated()`, `set_presentation_outcome()`, and
+`set_presentation_payload()` to model capability gaps, account changes, and
+presentation responses. `get_call_log()`/`call_log` expose defensive call
+traces; `clear_call_log()` clears only the trace, while `reset()` clears the
+mock account/state and trace but preserves configured controls.
+
 ## Typed cloud saves
 
 `GameServices.cloud_saves` is a `CloudSaveStore` layered over the provider's

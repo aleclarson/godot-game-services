@@ -8,6 +8,7 @@ var presentation_accepted: bool = false
 var handoff: String = ""
 var operation: StringName = &""
 var platform: StringName = &""
+var logical_id: StringName = &""
 var platform_id: String = ""
 var url: String = ""
 var native: bool = false
@@ -59,6 +60,7 @@ static func from_dictionary(
 		source.duplicate(true) if value is Dictionary else value
 	)
 	outcome.platform = StringName(str(source.get("platform", "")))
+	outcome.logical_id = StringName(str(source.get("id", source.get("logical_id", ""))))
 	outcome.platform_id = str(source.get("platform_id", ""))
 	outcome.url = str(source.get("url", source.get("destination_url", "")))
 	outcome.native = bool(source.get("native", false))
@@ -77,6 +79,8 @@ func get(key: StringName, default_value: Variant = null) -> Variant:
 			return handoff
 		&"operation":
 			return operation
+		&"id", &"logical_id":
+			return String(logical_id)
 		&"platform":
 			return String(platform)
 		&"platform_id":
@@ -97,6 +101,8 @@ func to_dictionary() -> Dictionary:
 		"handoff": handoff,
 		"operation": String(operation),
 		"platform": String(platform),
+		"id": String(logical_id),
+		"logical_id": String(logical_id),
 		"platform_id": platform_id,
 		"url": url,
 		"native": native,

@@ -45,6 +45,14 @@ facade. Consequently a handle can outlive a provider replacement and receives
 the same unavailable, not-configured, or cancelled result as a direct facade
 call.
 
+`GameServicesPresentationCoordinator` is the other facade-owned lifecycle
+boundary. It claims one presentation slot before invoking a provider or the
+independent `StoreReviewService`, and releases that slot only when the source
+request completes. Achievement UI, leaderboard UI, contextual review, and
+explicit store-page handoffs therefore share the same busy/cancel behavior.
+The coordinator never adds authentication to review requests and preserves the
+handoff meaning of successful review results.
+
 ## Data flow
 
 ```text
@@ -55,7 +63,9 @@ Game code
     -> GameServices (logical IDs, validation, typed result normalization)
         -> AppleGameCenterProvider -> native GameCenter singleton
         -> GooglePlayGamesProvider -> native GodotPlayGameServices singleton
-        -> MockGameServicesProvider -> deterministic editor/test state
+    -> MockGameServicesProvider -> deterministic editor/test state
+    -> GameServicesPresentationCoordinator
+        -> provider UI or StoreReviewService
     -> StoreReviewService (contextual request and explicit store-page handoff)
         -> native StoreReview singleton on iOS or Android
         -> mock/editor URL opener
@@ -96,7 +106,9 @@ a suppressed or failed prompt.
 Portable errors use a small stable code set: unavailable, unsupported, not
 authenticated, invalid argument, not configured, platform error, cancelled,
 conflict, not found, internal error, and invalid data. The original platform
-code and native payload are preserved separately when available.
+code and native payload are preserved separately when available. `BUSY` is the
+stable presentation-overlap result; it is returned before a second native UI or
+review handoff is invoked.
 
 The facade owns request lifetime. It tracks unfinished requests and completes
 them as cancelled before shutting down or replacing their provider, so callers
