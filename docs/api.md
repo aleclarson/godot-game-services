@@ -27,6 +27,24 @@ Calling `shutdown()` completes every unfinished request with `Code.CANCELLED`.
 has the same behavior. The cancellation result retains the provider name that
 owned the request.
 
+## Configuration validation
+
+`GameServicesConfig.validate()` is synchronous and does not load a native
+plugin. It returns `GameServicesConfigValidation` (a
+`GameServicesConfigDiagnostics` value) with `ok`/`valid`,
+`errors`, `warnings`, and `summary()`. Malformed logical IDs, platform IDs,
+Google achievement step counts, server credential settings, and configured
+store destinations are errors. Optional fields may be absent; warnings explain
+which feature will return `NOT_CONFIGURED`. `GameServices.initialize()` runs
+the same validation before creating a provider and returns `INVALID_ARGUMENT`
+with the diagnostics in `result.data` when errors exist.
+
+```gdscript
+var diagnostics := config.validate()
+if not diagnostics.ok:
+	push_error(diagnostics.summary())
+```
+
 ## Authentication and sessions
 
 `GameServices` owns a small session state so game code can observe the provider
@@ -69,7 +87,7 @@ completed with `Code.CANCELLED` using the provider that owned it.
 | Area | Methods |
 | --- | --- |
 | Authentication | `ensure_authenticated()`, `authenticate()`, `is_authenticated()`, `load_player()` |
-| Achievements | `unlock_achievement(id)`, `set_achievement_progress(id, progress)`, `load_achievements()` |
+| Achievements | `unlock_achievement(id)`, `set_achievement_progress(id, progress)`, `load_achievement(id)`, `load_achievements()` |
 | Leaderboards | `submit_score(id, score)`, `show_leaderboards(id)` |
 | Platform UI | `show_achievements()`, `show_leaderboards()` |
 | Store reviews | `supports_store_review()`, `request_in_app_review()`, `open_store_review_page()` |
@@ -97,6 +115,24 @@ Google's step counts remain available. `load_achievements()` returns a typed
 `Array[GameServicesAchievement]`. Score submissions return
 `GameServicesLeaderboardScore` with the logical leaderboard `id`, native
 `platform_id`, submitted integer `score`, and optional `rank`.
+
+For fixed logical IDs, `GameServices.achievements` and
+`GameServices.leaderboards` expose cached scoped handles. A handle stores only
+the logical ID and delegates each operation to the facade, so mappings and
+capabilities are re-resolved after provider replacement:
+
+```gdscript
+var achievement := GameServices.achievements.get("first_win")
+var leaderboard := GameServices.leaderboards.get("high_score")
+var unlocked := await achievement.unlock().wait()
+var score := await leaderboard.submit_score(42_000).wait()
+var shown := await leaderboard.show().wait()
+```
+
+Achievement handles provide `unlock()`, `set_progress(progress)`, and
+`load()`; leaderboard handles provide `submit_score(score)` and `show()`.
+Missing mappings and unavailable providers complete with the normal portable
+result codes, including after `GameServices.shutdown()`.
 
 Player operations return `GameServicesPlayer` values with `id`, `display_name`,
 `alias`, `provider`, and optional `avatar_uri`/`title`. `authenticate()` returns

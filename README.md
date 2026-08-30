@@ -84,6 +84,20 @@ apple_app_store_id = "123456789012"
 google_play_package_name = "com.example.game"
 ```
 
+Configuration can be checked synchronously in editor tooling or headless CI
+before a provider is touched:
+
+```gdscript
+var diagnostics := config.validate()
+if not diagnostics.ok:
+	push_error(diagnostics.summary())
+```
+
+Malformed mappings, Google step counts, credential settings, and configured
+store destinations are errors and block `GameServices.initialize()`. Empty
+optional feature mappings remain valid; calls for an unmapped achievement or
+leaderboard complete with `GameServicesResult.Code.NOT_CONFIGURED`.
+
 Use only logical IDs in game code:
 
 ```gdscript
@@ -97,6 +111,13 @@ print("Signed in as ", player.display_name if not player.display_name.is_empty()
 
 var achievement := await GameServices.unlock_achievement("first_win").wait()
 var score := await GameServices.submit_score("high_score", 42_000).wait()
+
+# Handles bind the logical ID once and keep resolving it through the facade.
+var first_win := GameServices.achievements.get("first_win")
+var high_score := GameServices.leaderboards.get("high_score")
+await first_win.set_progress(1.0).wait()
+await high_score.submit_score(42_000).wait()
+await high_score.show().wait()
 
 # This is an explicit fallback decision; the addon never redirects automatically.
 var review := await GameServices.request_in_app_review().wait()

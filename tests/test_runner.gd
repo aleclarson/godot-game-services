@@ -239,6 +239,37 @@ func _run() -> void:
 		"high_score": "CgkI_high_score",
 		"low_score": "CgkI_low_score",
 	}
+	var config_diagnostics := test_config.validate()
+	_check(config_diagnostics.is_valid(), "Valid configuration passes synchronous diagnostics")
+	var malformed_config := GameServicesConfig.new()
+	malformed_config.apple_achievement_ids = {"bad id": "gc.bad"}
+	var malformed_diagnostics := malformed_config.validate()
+	_check(
+		not malformed_diagnostics.is_valid()
+		and not malformed_diagnostics.errors.is_empty()
+		and malformed_diagnostics.errors[0].contains("Apple Game Center"),
+		"Malformed configuration reports provider-specific errors"
+	)
+	var malformed_google := GameServicesConfig.new()
+	malformed_google.google_achievement_ids = {"first_win": "CgkI_first_win"}
+	malformed_google.google_achievement_steps = {"first_win": 0}
+	malformed_google.google_play_package_name = "not a package"
+	malformed_google.google_play_store_review_url = "not a URL"
+	var malformed_google_diagnostics := malformed_google.validate()
+	_check(
+		not malformed_google_diagnostics.is_valid()
+		and str(malformed_google_diagnostics.errors).contains("total steps")
+		and str(malformed_google_diagnostics.errors).contains("package name")
+		and str(malformed_google_diagnostics.errors).contains("Store Review URL"),
+		"Google and store configuration diagnostics cover malformed settings"
+	)
+	var blocked := service.initialize(malformed_config, MockGameServicesProvider.new())
+	_check(
+		blocked.error_code == GameServicesResult.Code.INVALID_ARGUMENT
+		and blocked.data is GameServicesConfigDiagnostics
+		and service.provider_name() == &"unavailable",
+		"Malformed configuration blocks provider initialization"
+	)
 
 	var unavailable := service.initialize(test_config, UnavailableProvider.new())
 	_check(not unavailable.ok, "Provider initialization failures are returned")
@@ -360,6 +391,53 @@ func _run() -> void:
 		and auth_result.get_player().id == "mock-player"
 		and auth_result.raw_data is Dictionary,
 		"Authentication exposes a typed value and raw diagnostics"
+	)
+
+	var achievement_handle := service.achievements.get(&"first_win")
+	_check(
+		achievement_handle == service.achievement(&"first_win")
+		and achievement_handle.logical_id == &"first_win"
+		and achievement_handle.platform_id == "first_win",
+		"Achievement handles are cached and resolve logical IDs through the facade"
+	)
+	var leaderboard_handle := service.leaderboards.get(&"high_score")
+	_check(
+		leaderboard_handle == service.leaderboard(&"high_score")
+		and leaderboard_handle.platform_id == "high_score",
+		"Leaderboard handles are cached and resolve logical IDs through the facade"
+	)
+	var handle_progress: GameServicesResult = await achievement_handle.set_progress(0.5).wait()
+	_check(
+		handle_progress.ok
+		and handle_progress.data is GameServicesAchievement
+		and handle_progress.data.id == "first_win",
+		"Achievement handles delegate progress with typed results"
+	)
+	var handle_load: GameServicesResult = await achievement_handle.load().wait()
+	_check(
+		handle_load.ok
+		and handle_load.operation == &"load_achievement"
+		and handle_load.data is GameServicesAchievement
+		and handle_load.data.id == "first_win",
+		"Achievement handles load one typed achievement"
+	)
+	var handle_score: GameServicesResult = await leaderboard_handle.submit_score(42001).wait()
+	_check(
+		handle_score.ok
+		and handle_score.data is GameServicesLeaderboardScore
+		and handle_score.data.id == "high_score",
+		"Leaderboard handles delegate score submission with typed results"
+	)
+	var handle_presentation: GameServicesResult = await leaderboard_handle.show().wait()
+	_check(
+		handle_presentation.ok
+		and handle_presentation.data is GameServicesPresentationOutcome,
+		"Leaderboard handles delegate presentation with typed results"
+	)
+	var missing_handle_result: GameServicesResult = await service.achievement(&"missing").unlock().wait()
+	_check(
+		missing_handle_result.error_code == GameServicesResult.Code.NOT_CONFIGURED,
+		"Missing optional mappings remain feature-level NOT_CONFIGURED results"
 	)
 
 	var progress_result: GameServicesResult = await service.set_achievement_progress(&"first_win", 0.6).wait()
@@ -512,6 +590,11 @@ func _run() -> void:
 	await _test_cloud_save_cancellation(service, test_config)
 
 	service.shutdown()
+	var unavailable_handle: GameServicesResult = await achievement_handle.unlock().wait()
+	_check(
+		unavailable_handle.error_code == GameServicesResult.Code.UNAVAILABLE,
+		"Scoped handles remain lifecycle-safe after provider shutdown"
+	)
 	service.queue_free()
 
 	await _test_cloud_save_conflicts(test_config)

@@ -31,6 +31,20 @@ when the provider's auth callback did not include it. Provider replacement and
 shutdown clear the cache before disposing the old adapter; unfinished session
 requests receive the normal `CANCELLED` lifecycle result.
 
+`GameServicesConfig.validate()` is an independent synchronous boundary for
+editor tooling and headless CI. It reports provider-specific errors for
+malformed mappings, Google step counts, credentials, and store destinations;
+`GameServices.initialize()` refuses to create a provider when errors exist.
+Absent optional mappings are warnings and remain feature-level
+`NOT_CONFIGURED` results.
+
+The facade owns cached `GameServicesAchievementHandle` and
+`GameServicesLeaderboardHandle` collections. Handles retain only logical IDs
+and delegate mapping, capability, and request lifecycle decisions to the
+facade. Consequently a handle can outlive a provider replacement and receives
+the same unavailable, not-configured, or cancelled result as a direct facade
+call.
+
 ## Data flow
 
 ```text

@@ -37,6 +37,17 @@ var config: GameServicesConfig
 var provider: GameServicesProvider
 var cloud_saves: CloudSaveStore
 var store_review: StoreReviewService
+var achievement_handles: GameServicesAchievementHandleCollection
+var leaderboard_handles: GameServicesLeaderboardHandleCollection
+## Scoped achievement handles. The alias keeps the concise collection name
+## convenient while the typed result collection remains separate.
+var achievements: GameServicesAchievementHandleCollection:
+	get:
+		return achievement_handles
+## Scoped leaderboard handles.
+var leaderboards: GameServicesLeaderboardHandleCollection:
+	get:
+		return leaderboard_handles
 var _provider_available: bool = false
 var _active_requests: Dictionary[int, GameServicesRequest] = {}
 var _request_notifications: Dictionary[int, bool] = {}
@@ -51,6 +62,8 @@ var _player_request_providers: Dictionary[int, GameServicesProvider] = {}
 func _init() -> void:
 	cloud_saves = CloudSaveStore.new(self)
 	store_review = StoreReviewService.new()
+	achievement_handles = GameServicesAchievementHandles.new(self)
+	leaderboard_handles = GameServicesLeaderboardHandles.new(self)
 
 
 func _ready() -> void:
@@ -65,6 +78,22 @@ func initialize(
 ) -> GameServicesResult:
 	shutdown()
 	config = p_config if p_config != null else _load_default_config()
+	var config_diagnostics := config.validate()
+	if not config_diagnostics.is_valid():
+		var configured_provider := (
+			provider_override.provider_name()
+			if provider_override != null
+			else &"unavailable"
+		)
+		return GameServicesResult.failure(
+			&"initialize",
+			GameServicesResult.Code.INVALID_ARGUMENT,
+			config_diagnostics.summary(),
+			configured_provider,
+			null,
+			config_diagnostics,
+			config_diagnostics
+		)
 	store_review = (
 		store_review_override
 		if store_review_override != null
@@ -125,6 +154,63 @@ func supports(capability: Capability) -> bool:
 
 func is_authenticated() -> bool:
 	return _has_provider() and session_state == SessionState.AUTHENTICATED
+
+
+## Return the active provider's native achievement ID for a logical ID.
+## Handles use this only for inspection; operations always resolve through the
+## facade so provider replacement and lifecycle state cannot become stale.
+func resolve_achievement_id(logical_id: StringName) -> String:
+	if config == null or not _has_provider():
+		return ""
+	return config.achievement_id(logical_id, provider_name())
+
+
+func resolve_leaderboard_id(logical_id: StringName) -> String:
+	if config == null or not _has_provider():
+		return ""
+	return config.leaderboard_id(logical_id, provider_name())
+
+
+## Return a stable handle for one logical achievement ID.
+func achievement(logical_id: StringName) -> GameServicesAchievementHandle:
+	return achievement_handles.get(logical_id)
+
+
+func achievement_handle(logical_id: StringName) -> GameServicesAchievementHandle:
+	return achievement(logical_id)
+
+
+func get_achievement(logical_id: StringName) -> GameServicesAchievementHandle:
+	return achievement(logical_id)
+
+
+func get_achievement_handle(logical_id: StringName) -> GameServicesAchievementHandle:
+	return achievement(logical_id)
+
+
+func get_achievement_handles() -> GameServicesAchievementHandleCollection:
+	return achievement_handles
+
+
+## Return a stable handle for one logical leaderboard ID.
+func leaderboard(logical_id: StringName) -> GameServicesLeaderboardHandle:
+	return leaderboard_handles.get(logical_id)
+
+
+func leaderboard_handle(logical_id: StringName) -> GameServicesLeaderboardHandle:
+	return leaderboard(logical_id)
+
+
+func get_leaderboard(logical_id: StringName) -> GameServicesLeaderboardHandle:
+	return leaderboard(logical_id)
+
+
+func get_leaderboard_handle(logical_id: StringName) -> GameServicesLeaderboardHandle:
+	return leaderboard(logical_id)
+
+
+func get_leaderboard_handles() -> GameServicesLeaderboardHandleCollection:
+	return leaderboard_handles
 
 
 ## Request-composition conveniences kept on the facade for code that prefers a
@@ -235,7 +321,12 @@ func load_player() -> GameServicesRequest:
 
 
 func unlock_achievement(logical_id: StringName) -> GameServicesRequest:
-	var resolution := _resolve_identifier(&"unlock_achievement", logical_id, true)
+	var resolution := _resolve_identifier(
+		&"unlock_achievement",
+		logical_id,
+		true,
+		Capability.ACHIEVEMENTS
+	)
 	if resolution is GameServicesRequest:
 		return resolution
 	var platform_id: String = resolution
@@ -255,7 +346,12 @@ func set_achievement_progress(
 			&"set_achievement_progress",
 			"Achievement progress must be between 0.0 and 1.0"
 		)
-	var resolution := _resolve_identifier(&"set_achievement_progress", logical_id, true)
+	var resolution := _resolve_identifier(
+		&"set_achievement_progress",
+		logical_id,
+		true,
+		Capability.ACHIEVEMENT_PROGRESS
+	)
 	if resolution is GameServicesRequest:
 		return resolution
 	var platform_id: String = resolution
@@ -270,14 +366,49 @@ func set_achievement_progress(
 func load_achievements(force_reload: bool = false) -> GameServicesRequest:
 	if not _has_provider():
 		return _unavailable_request(&"load_achievements")
+	if not supports(Capability.ACHIEVEMENTS):
+		return _unsupported_request(
+			&"load_achievements",
+			"The active provider does not support achievements"
+		)
 	return _proxy_request(
 		provider.load_achievements(force_reload),
 		Callable(self, "_normalize_achievement_result")
 	)
 
 
+## Load one mapped achievement while preserving the typed value contract.
+## Providers expose a collection load operation, so the facade filters that
+## result after normalizing platform IDs back to logical IDs.
+func load_achievement(
+	logical_id: StringName,
+	force_reload: bool = false
+) -> GameServicesRequest:
+	var resolution := _resolve_identifier(
+		&"load_achievement",
+		logical_id,
+		true,
+		Capability.ACHIEVEMENTS
+	)
+	if resolution is GameServicesRequest:
+		return resolution
+	var source := _proxy_request(
+		provider.load_achievements(force_reload),
+		Callable(self, "_normalize_achievement_result")
+	)
+	var target := source.then(
+		Callable(self, "_select_achievement_result").bind(logical_id)
+	)
+	return target
+
+
 func submit_score(logical_id: StringName, score: int) -> GameServicesRequest:
-	var resolution := _resolve_identifier(&"submit_score", logical_id, false)
+	var resolution := _resolve_identifier(
+		&"submit_score",
+		logical_id,
+		false,
+		Capability.LEADERBOARDS
+	)
 	if resolution is GameServicesRequest:
 		return resolution
 	var platform_id: String = resolution
@@ -291,6 +422,11 @@ func submit_score(logical_id: StringName, score: int) -> GameServicesRequest:
 func show_achievements() -> GameServicesRequest:
 	if not _has_provider():
 		return _unavailable_request(&"show_achievements")
+	if not supports(Capability.PLATFORM_UI):
+		return _unsupported_request(
+			&"show_achievements",
+			"The active provider does not support achievement UI"
+		)
 	return _proxy_request(
 		provider.show_achievements(),
 		Callable(self, "_normalize_presentation_result")
@@ -300,12 +436,22 @@ func show_achievements() -> GameServicesRequest:
 func show_leaderboards(logical_id: StringName = &"") -> GameServicesRequest:
 	if not _has_provider():
 		return _unavailable_request(&"show_leaderboards")
+	if not supports(Capability.PLATFORM_UI):
+		return _unsupported_request(
+			&"show_leaderboards",
+			"The active provider does not support leaderboard UI"
+		)
 	if logical_id.is_empty():
 		return _proxy_request(
 			provider.show_leaderboards(),
 			Callable(self, "_normalize_presentation_result")
 		)
-	var resolution := _resolve_identifier(&"show_leaderboards", logical_id, false)
+	var resolution := _resolve_identifier(
+		&"show_leaderboards",
+		logical_id,
+		false,
+		Capability.LEADERBOARDS
+	)
 	if resolution is GameServicesRequest:
 		return resolution
 	var platform_id: String = resolution
@@ -722,12 +868,21 @@ func _clear_session() -> void:
 func _resolve_identifier(
 	operation: StringName,
 	logical_id: StringName,
-	is_achievement: bool
+	is_achievement: bool,
+	required_capability: int = -1
 ) -> Variant:
 	if not _has_provider():
 		return _unavailable_request(operation)
 	if logical_id.is_empty():
 		return _invalid_request(operation, "A logical identifier is required")
+	if (
+		required_capability >= 0
+		and not supports(required_capability as Capability)
+	):
+		return _unsupported_request(
+			operation,
+			"The active provider does not support %s" % operation
+		)
 	var platform_id := (
 		config.achievement_id(logical_id, provider_name())
 		if is_achievement
@@ -783,6 +938,43 @@ func _identifier_result(
 				result.raw_data
 			)
 	return _copy_result_with_data(result, data, result.raw_data)
+
+
+func _select_achievement_result(
+	result: GameServicesResult,
+	logical_id: StringName
+) -> GameServicesResult:
+	if not result.ok:
+		return result
+	var achievements: GameServicesAchievementCollection = null
+	if result.data is GameServicesAchievementCollection:
+		achievements = result.data
+	elif result.data is Array:
+		achievements = GameServicesAchievementCollection.new(result.data)
+	if achievements == null:
+		return GameServicesResult.failure(
+			&"load_achievement",
+			GameServicesResult.Code.INVALID_DATA,
+			"The provider returned no achievement collection",
+			result.provider,
+			null,
+			null,
+			result.raw_data
+		)
+	var achievement := achievements.find_by_id(logical_id)
+	if achievement == null:
+		return GameServicesResult.failure(
+			&"load_achievement",
+			GameServicesResult.Code.NOT_FOUND,
+			"No achievement state was returned for '%s'" % logical_id,
+			result.provider,
+			null,
+			null,
+			result.raw_data
+		)
+	var selected := _copy_result_with_data(result, achievement, result.raw_data)
+	selected.operation = &"load_achievement"
+	return selected
 
 
 func _normalize_achievement_result(result: GameServicesResult) -> GameServicesResult:
@@ -1012,6 +1204,20 @@ func _not_configured_request(operation: StringName, message: String) -> GameServ
 	request.complete(GameServicesResult.failure(
 		operation,
 		GameServicesResult.Code.NOT_CONFIGURED,
+		message,
+		provider_name()
+	))
+	return _track(request)
+
+
+func _unsupported_request(
+	operation: StringName,
+	message: String = "The active provider does not support this operation"
+) -> GameServicesRequest:
+	var request := GameServicesRequest.new(operation)
+	request.complete(GameServicesResult.failure(
+		operation,
+		GameServicesResult.Code.UNSUPPORTED,
 		message,
 		provider_name()
 	))
