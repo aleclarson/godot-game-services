@@ -1062,11 +1062,15 @@ func _test_google_adapter(test_config: GameServicesConfig) -> void:
 	)
 
 	var denied_request := service.authenticate()
+	_check(
+		fake.calls[-1].method == "isAuthenticated",
+		"Google authentication observes the automatic sign-in without prompting"
+	)
 	fake.userAuthenticated.emit(false)
 	var denied: GameServicesResult = await denied_request.wait()
 	_check(
 		denied.error_code == GameServicesResult.Code.PLATFORM_ERROR,
-		"A rejected Google sign-in is not reported as success"
+		"Unavailable automatic Google authentication is not reported as success"
 	)
 
 	var auth_request := service.authenticate()

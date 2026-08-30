@@ -82,6 +82,10 @@ cache immediately; an unauthenticated event clears it. `initialize()` and
 `shutdown()` clear the previous session, and any unfinished ensure request is
 completed with `Code.CANCELLED` using the provider that owned it.
 
+On Android, authentication observes Play Games Services v2's automatic launch
+attempt. It does not invoke the manual sign-in flow or show an account selector;
+an unavailable automatic session completes as an authentication failure.
+
 ## Operations
 
 | Area | Methods |

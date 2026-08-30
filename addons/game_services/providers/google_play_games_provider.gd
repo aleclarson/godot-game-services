@@ -69,7 +69,9 @@ func is_authenticated() -> bool:
 func authenticate() -> GameServicesRequest:
 	var request := _new_request(&"authenticate")
 	_queue_signal("userAuthenticated", request)
-	_plugin.call("signIn")
+	# PGS v2 authenticates automatically at launch. Querying that result waits for
+	# the automatic attempt without opening the manual account-selection flow.
+	_plugin.call("isAuthenticated")
 	return request
 
 

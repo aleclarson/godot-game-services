@@ -20,6 +20,10 @@ func initialize() -> void:
 	_record("initialize")
 
 
+func isAuthenticated() -> void:
+	_record("isAuthenticated")
+
+
 func signIn() -> void:
 	_record("signIn")
 
