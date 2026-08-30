@@ -17,6 +17,14 @@ The request object avoids two common signal-only API problems: callers can
 associate completion with the operation they started, and immediate validation
 failures cannot race past an `await` connection.
 
+The facade also owns authentication session coordination. `session_state` and
+`current_player` are updated from explicit auth/player requests and provider
+authentication events. `ensure_authenticated()` coalesces concurrent callers
+onto one request, authenticates only when needed, and loads the player profile
+when the provider's auth callback did not include it. Provider replacement and
+shutdown clear the cache before disposing the old adapter; unfinished session
+requests receive the normal `CANCELLED` lifecycle result.
+
 ## Data flow
 
 ```text

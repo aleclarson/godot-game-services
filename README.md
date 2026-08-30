@@ -87,10 +87,13 @@ google_play_package_name = "com.example.game"
 Use only logical IDs in game code:
 
 ```gdscript
-var auth := await GameServices.authenticate().wait()
+var auth := await GameServices.ensure_authenticated().wait()
 if not auth.ok:
 	push_warning(auth.error_message)
 	return
+
+var player: Dictionary = auth.data
+print("Signed in as ", player.get("display_name", player.id))
 
 var achievement := await GameServices.unlock_achievement("first_win").wait()
 var score := await GameServices.submit_score("high_score", 42_000).wait()
@@ -112,6 +115,12 @@ do not require Game Center or Play Games authentication.
 An immediate validation failure is safe to await because
 `GameServicesRequest.wait()` first checks whether the request already
 completed.
+
+`ensure_authenticated()` is explicit and coalesces concurrent callers onto one
+authentication/player-load request. The facade exposes `session_state` and the
+cached `current_player`; provider authentication events update both, while
+provider replacement and shutdown clear the cache. Use `authenticate()` and
+`load_player()` directly when those transport steps need to remain separate.
 
 For a fixed save slot, use a configured handle. It keeps the slot name and its
 schema settings out of gameplay code:

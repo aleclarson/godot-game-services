@@ -20,11 +20,48 @@ Calling `shutdown()` completes every unfinished request with `Code.CANCELLED`.
 has the same behavior. The cancellation result retains the provider name that
 owned the request.
 
+## Authentication and sessions
+
+`GameServices` owns a small session state so game code can observe the provider
+without duplicating authentication flow:
+
+- `session_state` is one of `SessionState.UNAVAILABLE`,
+  `SessionState.SIGNED_OUT`, `SessionState.AUTHENTICATING`, or
+  `SessionState.AUTHENTICATED`.
+- `current_player` is the cached normalized player dictionary. Use
+  `get_current_player()` when a defensive copy is preferred.
+- `session_changed(state, player)` fires when either the state or cached player
+  changes. The existing `authentication_changed(authenticated, player)` signal
+  remains available for provider authentication events.
+
+Use `ensure_authenticated()` when a feature needs an authenticated player. It
+is opt-in: it does not run for unrelated feature calls. Concurrent calls share
+one request and one provider authentication/player-load sequence. Once a player
+is cached, later calls complete from the cache until a provider event, provider
+replacement, or shutdown clears it:
+
+```gdscript
+var ensured := await GameServices.ensure_authenticated().wait()
+if not ensured.ok:
+	push_warning(ensured.error_message)
+	return
+
+var player: Dictionary = ensured.data
+print("Signed in as ", player.get("display_name", player.id))
+```
+
+`authenticate()` and `load_player()` remain explicit transport operations for
+callers that need them separately. Successful authentication or player loading
+also updates the session cache. A provider authentication event updates the
+cache immediately; an unauthenticated event clears it. `initialize()` and
+`shutdown()` clear the previous session, and any unfinished ensure request is
+completed with `Code.CANCELLED` using the provider that owned it.
+
 ## Operations
 
 | Area | Methods |
 | --- | --- |
-| Authentication | `authenticate()`, `is_authenticated()`, `load_player()` |
+| Authentication | `ensure_authenticated()`, `authenticate()`, `is_authenticated()`, `load_player()` |
 | Achievements | `unlock_achievement(id)`, `set_achievement_progress(id, progress)`, `load_achievements()` |
 | Leaderboards | `submit_score(id, score)`, `show_leaderboards(id)` |
 | Platform UI | `show_achievements()`, `show_leaderboards()` |

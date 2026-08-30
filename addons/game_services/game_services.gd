@@ -4,6 +4,7 @@ extends Node
 
 signal provider_changed(provider_name: StringName, capabilities: int)
 signal authentication_changed(authenticated: bool, player: Dictionary)
+signal session_changed(state: SessionState, player: Dictionary)
 signal request_finished(request: GameServicesRequest, result: GameServicesResult)
 
 enum Capability {
@@ -17,6 +18,17 @@ enum Capability {
 	SERVER_CREDENTIALS = 1 << 7,
 }
 
+## Lifecycle state owned by the facade rather than inferred from a provider.
+##
+## A provider can report authentication before its player profile is available,
+## so AUTHENTICATING also covers the player-load part of ensure_authenticated().
+enum SessionState {
+	UNAVAILABLE,
+	SIGNED_OUT,
+	AUTHENTICATING,
+	AUTHENTICATED,
+}
+
 const DEFAULT_CONFIG_PATH := "res://game_services_config.tres"
 const ALLOWED_SAVE_NAME_CHARACTERS := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
 
@@ -28,6 +40,12 @@ var store_review: StoreReviewService
 var _provider_available: bool = false
 var _active_requests: Dictionary[int, GameServicesRequest] = {}
 var _request_notifications: Dictionary[int, bool] = {}
+var session_state: SessionState = SessionState.UNAVAILABLE
+var current_player: Dictionary = {}
+var _ensure_request: GameServicesRequest
+var _ensure_provider: GameServicesProvider
+var _authentication_request_providers: Dictionary[int, GameServicesProvider] = {}
+var _player_request_providers: Dictionary[int, GameServicesProvider] = {}
 
 
 func _init() -> void:
@@ -58,19 +76,34 @@ func initialize(
 	provider.authentication_changed.connect(_on_authentication_changed)
 	var result := provider.initialize(config)
 	_provider_available = result.ok
+	if _provider_available:
+		_set_session_state(
+			SessionState.AUTHENTICATED if provider.is_authenticated() else SessionState.SIGNED_OUT,
+			{},
+			false
+		)
+	else:
+		_set_session_state(SessionState.UNAVAILABLE, {}, false)
 	provider_changed.emit(provider.provider_name(), capabilities())
 	return result
 
 
 func shutdown() -> void:
-	cloud_saves._cancel_pending_requests(provider_name())
-	_cancel_pending_requests(provider_name())
+	var cancelled_provider := provider_name()
+	cloud_saves._cancel_pending_requests(cancelled_provider)
+	# Mark the facade unavailable before completing requests. Some providers
+	# complete their transport request synchronously when they are cancelled;
+	# those callbacks must not start a new ensure_authenticated chain.
+	_provider_available = false
+	_clear_session()
+	_cancel_pending_requests(cancelled_provider)
 	if is_instance_valid(store_review):
 		store_review.shutdown()
-	_provider_available = false
 	if not is_instance_valid(provider):
 		provider = null
 		return
+	if provider.authentication_changed.is_connected(_on_authentication_changed):
+		provider.authentication_changed.disconnect(_on_authentication_changed)
 	provider.shutdown()
 	if provider.get_parent() == self:
 		remove_child(provider)
@@ -91,7 +124,41 @@ func supports(capability: Capability) -> bool:
 
 
 func is_authenticated() -> bool:
-	return _has_provider() and provider.is_authenticated()
+	return _has_provider() and session_state == SessionState.AUTHENTICATED
+
+
+## Returns a defensive copy of the most recently loaded normalized player.
+func get_current_player() -> Dictionary:
+	return current_player.duplicate(true)
+
+
+## Returns one request for the current authenticated player.
+##
+## Authentication and player loading are intentionally opt-in. Concurrent calls
+## while this operation is pending receive the same request and therefore share
+## both native work and its eventual lifecycle result.
+func ensure_authenticated() -> GameServicesRequest:
+	if not _has_provider():
+		return _unavailable_request(&"ensure_authenticated")
+	if (
+		_session_is_ready()
+		and _ensure_request == null
+	):
+		return _completed_player_request()
+	if is_instance_valid(_ensure_request) and not _ensure_request.is_completed:
+		return _ensure_request
+
+	_ensure_provider = provider
+	var target := GameServicesRequest.new(&"ensure_authenticated")
+	_ensure_request = target
+	_track(target)
+	_set_session_state(SessionState.AUTHENTICATING, current_player, false)
+	# A provider may report authenticated before it has delivered a profile (for
+	# example, Game Center can be authenticated at launch). Ask it for the
+	# authentication event once so adapters can populate the current player;
+	# _start_ensure_player_load() is used afterward only when that event omitted it.
+	_start_ensure_authentication()
+	return target
 
 
 func supports_store_review() -> bool:
@@ -113,13 +180,18 @@ func open_store_review_page() -> GameServicesRequest:
 func authenticate() -> GameServicesRequest:
 	if not _has_provider():
 		return _unavailable_request(&"authenticate")
-	return _track(provider.authenticate())
+	_set_session_state(SessionState.AUTHENTICATING, current_player, false)
+	var source := provider.authenticate()
+	_observe_authentication_request(source, provider)
+	return _track(source)
 
 
 func load_player() -> GameServicesRequest:
 	if not _has_provider():
 		return _unavailable_request(&"load_player")
-	return _track(provider.load_player())
+	var source := provider.load_player()
+	_observe_player_request(source, provider)
+	return _track(source)
 
 
 func unlock_achievement(logical_id: StringName) -> GameServicesRequest:
@@ -357,6 +429,235 @@ func _has_provider() -> bool:
 	return _provider_available and is_instance_valid(provider)
 
 
+func _session_is_ready() -> bool:
+	return session_state == SessionState.AUTHENTICATED and not current_player.is_empty()
+
+
+func _completed_player_request() -> GameServicesRequest:
+	var request := GameServicesRequest.new(&"ensure_authenticated")
+	request.complete(GameServicesResult.success(
+		&"ensure_authenticated",
+		current_player.duplicate(true),
+		provider_name()
+	))
+	return _track(request)
+
+
+func _start_ensure_authentication() -> void:
+	if not _ensure_is_active():
+		return
+	var owner := _ensure_provider
+	var source := owner.authenticate()
+	_track(source, false)
+	if source.is_completed:
+		_on_ensure_authentication_completed(source.result, source, owner)
+	else:
+		source.completed.connect(
+			Callable(self, "_on_ensure_authentication_completed").bind(source, owner),
+			CONNECT_ONE_SHOT
+		)
+
+
+func _start_ensure_player_load() -> void:
+	if not _ensure_is_active():
+		return
+	if _session_is_ready():
+		_complete_ensure_success()
+		return
+	var owner := _ensure_provider
+	var source := owner.load_player()
+	_track(source, false)
+	if source.is_completed:
+		_on_ensure_player_completed(source.result, source, owner)
+	else:
+		source.completed.connect(
+			Callable(self, "_on_ensure_player_completed").bind(source, owner),
+			CONNECT_ONE_SHOT
+		)
+
+
+func _on_ensure_authentication_completed(
+	result: GameServicesResult,
+	_source: GameServicesRequest,
+	owner: GameServicesProvider
+) -> void:
+	if not _ensure_is_active() or owner != _ensure_provider or owner != provider:
+		return
+	_update_session_from_authentication_result(result)
+	if not result.ok:
+		_complete_ensure_result(_session_result(result))
+		return
+	_start_ensure_player_load()
+
+
+func _on_ensure_player_completed(
+	result: GameServicesResult,
+	_source: GameServicesRequest,
+	owner: GameServicesProvider
+) -> void:
+	if not _ensure_is_active() or owner != _ensure_provider or owner != provider:
+		return
+	if not result.ok:
+		_set_session_state(SessionState.SIGNED_OUT, {}, false)
+		_complete_ensure_result(_session_result(result))
+		return
+	if result.data is not Dictionary or (result.data as Dictionary).is_empty():
+		_set_session_state(SessionState.SIGNED_OUT, {}, false)
+		_complete_ensure_result(GameServicesResult.failure(
+			&"ensure_authenticated",
+			GameServicesResult.Code.INVALID_DATA,
+			"The provider did not return a current player",
+			owner.provider_name()
+		))
+		return
+	_set_session_state(SessionState.AUTHENTICATED, result.data, false)
+	_complete_ensure_success()
+
+
+func _complete_ensure_success() -> void:
+	if not _ensure_is_active():
+		return
+	_ensure_request.complete(GameServicesResult.success(
+		&"ensure_authenticated",
+		current_player.duplicate(true),
+		provider_name()
+	))
+
+
+func _complete_ensure_result(result: GameServicesResult) -> void:
+	if not _ensure_is_active():
+		return
+	_ensure_request.complete(result)
+
+
+func _session_result(result: GameServicesResult) -> GameServicesResult:
+	if result.ok:
+		return GameServicesResult.success(
+			&"ensure_authenticated",
+			current_player.duplicate(true),
+			result.provider
+		)
+	return GameServicesResult.failure(
+		&"ensure_authenticated",
+		result.error_code,
+		result.error_message,
+		result.provider,
+		result.platform_code,
+		result.data
+	)
+
+
+func _ensure_is_active() -> bool:
+	return (
+		is_instance_valid(_ensure_request)
+		and not _ensure_request.is_completed
+		and is_instance_valid(_ensure_provider)
+		and _ensure_provider == provider
+		and _has_provider()
+	)
+
+
+func _observe_authentication_request(
+	request: GameServicesRequest,
+	owner: GameServicesProvider
+) -> void:
+	_authentication_request_providers[request.id] = owner
+	if request.is_completed:
+		_on_authentication_request_completed(request.result, request, owner)
+	else:
+		request.completed.connect(
+			Callable(self, "_on_authentication_request_completed").bind(request, owner),
+			CONNECT_ONE_SHOT
+		)
+
+
+func _on_authentication_request_completed(
+	result: GameServicesResult,
+	request: GameServicesRequest,
+	owner: GameServicesProvider
+) -> void:
+	_authentication_request_providers.erase(request.id)
+	if owner != provider or not _has_provider():
+		return
+	_update_session_from_authentication_result(result)
+
+
+func _update_session_from_authentication_result(
+	result: GameServicesResult
+) -> void:
+	if result.ok:
+		var player := _player_from_authentication_result(result)
+		_set_session_state(
+			SessionState.AUTHENTICATED,
+			player if not player.is_empty() else current_player,
+			false
+		)
+	else:
+		_set_session_state(SessionState.SIGNED_OUT, {}, false)
+
+
+func _player_from_authentication_result(result: GameServicesResult) -> Dictionary:
+	if result.data is not Dictionary:
+		return {}
+	var payload: Dictionary = result.data
+	if payload.get("player") is Dictionary:
+		return (payload["player"] as Dictionary).duplicate(true)
+	if payload.has("id"):
+		return payload.duplicate(true)
+	return {}
+
+
+func _observe_player_request(
+	request: GameServicesRequest,
+	owner: GameServicesProvider
+) -> void:
+	_player_request_providers[request.id] = owner
+	if request.is_completed:
+		_on_player_request_completed(request.result, request, owner)
+	else:
+		request.completed.connect(
+			Callable(self, "_on_player_request_completed").bind(request, owner),
+			CONNECT_ONE_SHOT
+		)
+
+
+func _on_player_request_completed(
+	result: GameServicesResult,
+	request: GameServicesRequest,
+	owner: GameServicesProvider
+) -> void:
+	_player_request_providers.erase(request.id)
+	if owner != provider or not _has_provider() or not result.ok:
+		return
+	if result.data is Dictionary and not (result.data as Dictionary).is_empty():
+		_set_session_state(SessionState.AUTHENTICATED, result.data, false)
+
+
+func _set_session_state(
+	state: SessionState,
+	player: Dictionary,
+	emit_authentication: bool
+) -> void:
+	var next_player := player.duplicate(true)
+	var changed := session_state != state or current_player != next_player
+	session_state = state
+	current_player = next_player
+	if changed:
+		session_changed.emit(session_state, current_player.duplicate(true))
+	if emit_authentication:
+		authentication_changed.emit(
+			session_state == SessionState.AUTHENTICATED,
+		current_player.duplicate(true)
+	)
+
+
+func _clear_session() -> void:
+	var had_session := session_state != SessionState.UNAVAILABLE or not current_player.is_empty()
+	_set_session_state(SessionState.UNAVAILABLE, {}, false)
+	if had_session:
+		authentication_changed.emit(false, {})
+
+
 func _resolve_identifier(
 	operation: StringName,
 	logical_id: StringName,
@@ -478,6 +779,11 @@ func _on_request_completed(result: GameServicesResult, request: GameServicesRequ
 	var emit_finished := bool(_request_notifications.get(request.id, true))
 	_active_requests.erase(request.id)
 	_request_notifications.erase(request.id)
+	_authentication_request_providers.erase(request.id)
+	_player_request_providers.erase(request.id)
+	if request == _ensure_request:
+		_ensure_request = null
+		_ensure_provider = null
 	if emit_finished:
 		request_finished.emit(request, result)
 
@@ -511,10 +817,20 @@ func _cancel_pending_requests(cancelled_provider: StringName) -> void:
 		))
 	_active_requests.clear()
 	_request_notifications.clear()
+	_authentication_request_providers.clear()
+	_player_request_providers.clear()
+	_ensure_request = null
+	_ensure_provider = null
 
 
 func _on_authentication_changed(authenticated: bool, player: Dictionary) -> void:
-	authentication_changed.emit(authenticated, player)
+	if not _has_provider():
+		return
+	if authenticated:
+		_set_session_state(SessionState.AUTHENTICATED, player, false)
+	else:
+		_set_session_state(SessionState.SIGNED_OUT, {}, false)
+	authentication_changed.emit(authenticated, current_player.duplicate(true))
 
 
 func _unavailable_request(operation: StringName) -> GameServicesRequest:

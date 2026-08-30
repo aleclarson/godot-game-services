@@ -37,6 +37,64 @@ class PendingProvider extends GameServicesProvider:
 		return _new_request(&"authenticate")
 
 
+class SessionProvider extends GameServicesProvider:
+	var authenticated: bool = false
+	var player: Dictionary = {
+		"id": "session-player",
+		"display_name": "Session Player",
+		"alias": "Session",
+		"provider": "session_test",
+	}
+	var authenticate_calls: int = 0
+	var load_player_calls: int = 0
+	var pending_authentication: GameServicesRequest
+	var pending_player: GameServicesRequest
+
+
+	func provider_name() -> StringName:
+		return &"session_test"
+
+
+	func capabilities() -> int:
+		return Capability.AUTHENTICATION | Capability.PLAYER_PROFILE
+
+
+	func is_authenticated() -> bool:
+		return authenticated
+
+
+	func authenticate() -> GameServicesRequest:
+		authenticate_calls += 1
+		pending_authentication = _new_request(&"authenticate")
+		return pending_authentication
+
+
+	func load_player() -> GameServicesRequest:
+		load_player_calls += 1
+		pending_player = _new_request(&"load_player")
+		return pending_player
+
+
+	func complete_authentication() -> void:
+		authenticated = true
+		# Match providers whose authentication callback does not include a profile;
+		# ensure_authenticated must then coalesce the follow-up player load.
+		authentication_changed.emit(true, {})
+		pending_authentication.complete(GameServicesResult.success(
+			&"authenticate",
+			{"authenticated": true},
+			provider_name()
+		))
+
+
+	func complete_player() -> void:
+		pending_player.complete(GameServicesResult.success(
+			&"load_player",
+			player.duplicate(true),
+			provider_name()
+		))
+
+
 class PendingCloudSaveProvider extends GameServicesProvider:
 	func provider_name() -> StringName:
 		return &"pending_cloud_save_test"
@@ -213,6 +271,74 @@ func _run() -> void:
 	_check(
 		finished_request_ids.count(pending_request.id) == 1,
 		"A cancelled request emits request_finished exactly once"
+	)
+
+	var session_provider := SessionProvider.new()
+	var session_initialized := service.initialize(test_config, session_provider)
+	_check(session_initialized.ok, "Session provider initializes")
+	_check(
+		service.session_state == service.SessionState.SIGNED_OUT,
+		"A provider starts with a signed-out session state"
+	)
+	var first_ensure := service.ensure_authenticated()
+	var second_ensure := service.ensure_authenticated()
+	_check(first_ensure == second_ensure, "Concurrent ensure requests are coalesced")
+	_check(session_provider.authenticate_calls == 1, "Coalesced ensure requests authenticate once")
+	session_provider.complete_authentication()
+	_check(session_provider.load_player_calls == 1, "Ensure loads the current player once")
+	session_provider.complete_player()
+	var ensured_player: GameServicesResult = await first_ensure.wait()
+	_check(
+		ensured_player.ok
+		and ensured_player.operation == &"ensure_authenticated"
+		and ensured_player.data.id == "session-player",
+		"Ensure returns the normalized current player"
+	)
+	var cached_player: GameServicesResult = await service.ensure_authenticated().wait()
+	_check(
+		cached_player.ok
+		and cached_player.data.id == "session-player"
+		and session_provider.authenticate_calls == 1
+		and session_provider.load_player_calls == 1,
+		"Already-authenticated callers reuse the cached player"
+	)
+	var changed_player := {
+		"id": "changed-player",
+		"display_name": "Changed Player",
+		"provider": "session_test",
+	}
+	session_provider.player = changed_player
+	session_provider.authentication_changed.emit(true, changed_player)
+	_check(
+		service.session_state == service.SessionState.AUTHENTICATED
+		and service.current_player.id == "changed-player",
+		"Provider authentication events update session state and cache"
+	)
+	session_provider.authentication_changed.emit(false, {})
+	_check(
+		service.session_state == service.SessionState.SIGNED_OUT
+		and service.current_player.is_empty()
+		and not service.is_authenticated(),
+		"Provider sign-out events clear the cached player"
+	)
+	var pending_ensure := service.ensure_authenticated()
+	var replacement := SessionProvider.new()
+	var replacement_initialized := service.initialize(test_config, replacement)
+	_check(replacement_initialized.ok, "Provider replacement succeeds")
+	var replaced_result: GameServicesResult = await pending_ensure.wait()
+	_check(
+		replaced_result.error_code == GameServicesResult.Code.CANCELLED
+		and replaced_result.provider == &"session_test",
+		"Provider replacement cancels the pending session request"
+	)
+	var lifecycle_ensure := service.ensure_authenticated()
+	service.shutdown()
+	var lifecycle_result: GameServicesResult = await lifecycle_ensure.wait()
+	_check(
+		lifecycle_result.error_code == GameServicesResult.Code.CANCELLED
+		and service.session_state == service.SessionState.UNAVAILABLE
+		and service.current_player.is_empty(),
+		"Shutdown cancels ensure and clears session state"
 	)
 
 	var initialized := service.initialize(test_config, MockGameServicesProvider.new())
