@@ -14,10 +14,16 @@ signal snapshotsLoaded(snapshots_json: String)
 signal snapshotDeleted(deleted: bool, snapshot_id: String)
 
 var calls: Array[Dictionary] = []
+var java_method_checks: Array[StringName] = []
 
 
 func initialize() -> void:
 	_record("initialize")
+
+
+func has_java_method(method: StringName) -> bool:
+	java_method_checks.append(method)
+	return has_method(method)
 
 
 func isAuthenticated() -> void:

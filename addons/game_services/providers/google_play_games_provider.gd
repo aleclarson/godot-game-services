@@ -40,11 +40,11 @@ func initialize(p_config: GameServicesConfig) -> GameServicesResult:
 		)
 	_plugin = Engine.get_singleton("GodotPlayGameServices")
 	if (
-		_plugin.has_method("saveGame")
-		and _plugin.has_method("loadGame")
-		and _plugin.has_method("loadSnapshots")
-		and _plugin.has_method("deleteSnapshot")
-		and _plugin.has_method("resolveSnapshotConflict")
+		_has_native_method(&"saveGame")
+		and _has_native_method(&"loadGame")
+		and _has_native_method(&"loadSnapshots")
+		and _has_native_method(&"deleteSnapshot")
+		and _has_native_method(&"resolveSnapshotConflict")
 		and _plugin.has_signal("conflictResolved")
 	):
 		_capabilities |= Capability.CLOUD_SAVES
@@ -291,6 +291,15 @@ func _connect_native_signals() -> void:
 	_connect_native("conflictResolved", "_on_conflict_resolved")
 	_connect_native("snapshotsLoaded", "_on_snapshots_loaded")
 	_connect_native("snapshotDeleted", "_on_snapshot_deleted")
+
+
+func _has_native_method(method_name: StringName) -> bool:
+	# JNISingleton keeps @UsedByGodot methods in a Java method map that is not
+	# included in Object.has_method(). Keep the fallback for non-JNI test doubles
+	# and older bridges that expose methods through the ordinary Object API.
+	if _plugin.has_method(&"has_java_method"):
+		return bool(_plugin.call(&"has_java_method", method_name))
+	return _plugin.has_method(method_name)
 
 
 func _connect_native(signal_name: StringName, method_name: StringName) -> void:

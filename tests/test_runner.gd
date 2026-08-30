@@ -24,6 +24,26 @@ class UnavailableProvider extends GameServicesProvider:
 		)
 
 
+class GoogleJavaMethodProbe extends Node:
+	signal conflictResolved(resolved: bool, payload_json: String)
+
+	var java_methods: Dictionary = {
+		"saveGame": true,
+		"loadGame": true,
+		"loadSnapshots": true,
+		"deleteSnapshot": true,
+		"resolveSnapshotConflict": true,
+	}
+
+
+	func initialize() -> void:
+		pass
+
+
+	func has_java_method(method: StringName) -> bool:
+		return java_methods.has(String(method))
+
+
 class PendingProvider extends GameServicesProvider:
 	func provider_name() -> StringName:
 		return &"pending_test"
@@ -598,6 +618,7 @@ func _run() -> void:
 	service.queue_free()
 
 	await _test_cloud_save_conflicts(test_config)
+	await _test_google_java_method_probe(test_config)
 	await _test_google_adapter(test_config)
 	await _test_apple_adapter(test_config)
 	await _test_store_review(test_config)
@@ -1060,6 +1081,16 @@ func _test_google_adapter(test_config: GameServicesConfig) -> void:
 		service.supports(service.Capability.CLOUD_SAVES),
 		"Patched Google bridge advertises cloud saves"
 	)
+	_check(
+		fake.java_method_checks == [
+			&"saveGame",
+			&"loadGame",
+			&"loadSnapshots",
+			&"deleteSnapshot",
+			&"resolveSnapshotConflict",
+		],
+		"Google adapter probes Java snapshot methods through has_java_method"
+	)
 
 	var denied_request := service.authenticate()
 	_check(
@@ -1103,8 +1134,18 @@ func _test_google_adapter(test_config: GameServicesConfig) -> void:
 		saved_a.data.id == "slot-a" and saved_b.data.id == "slot-b",
 		"Concurrent Google saves are matched by name"
 	)
+	_check(
+		fake.calls[-2].method == "saveGame"
+		and fake.calls[-1].method == "saveGame",
+		"Google saves dispatch through the Java snapshot method"
+	)
 
 	var failed_load_request := service.load_game("slot-a")
+	_check(
+		fake.calls[-1].method == "loadGame"
+		and fake.calls[-1].arguments == ["slot-a", false],
+		"Google loads dispatch through the Java snapshot method"
+	)
 	fake.gameLoaded.emit(JSON.stringify({"error": "offline", "errorCode": 7}), "slot-a")
 	var failed_load: GameServicesResult = await failed_load_request.wait()
 	_check(
@@ -1112,6 +1153,26 @@ func _test_google_adapter(test_config: GameServicesConfig) -> void:
 		and failed_load.platform_code == 7,
 		"Google snapshot errors preserve native details"
 	)
+
+	var list_request := service.list_saved_games(true)
+	_check(
+		fake.calls[-1].method == "loadSnapshots"
+		and fake.calls[-1].arguments == [true],
+		"Google snapshot lists dispatch through the Java snapshot method"
+	)
+	fake.snapshotsLoaded.emit("[]")
+	var listed: GameServicesResult = await list_request.wait()
+	_check(listed.ok and listed.data.is_empty(), "Google snapshots can be listed")
+
+	var delete_request := service.delete_saved_game("snapshot-1")
+	_check(
+		fake.calls[-1].method == "deleteSnapshot"
+		and fake.calls[-1].arguments == ["snapshot-1"],
+		"Google deletes dispatch through the Java snapshot method"
+	)
+	fake.snapshotDeleted.emit(true, "snapshot-1")
+	var deleted: GameServicesResult = await delete_request.wait()
+	_check(deleted.ok and deleted.data.deleted, "Google snapshots can be deleted")
 
 	var conflict_request := service.load_game("slot-a")
 	fake.conflictEmitted.emit(JSON.stringify({
@@ -1138,6 +1199,11 @@ func _test_google_adapter(test_config: GameServicesConfig) -> void:
 		"server",
 		bytes
 	)
+	_check(
+		fake.calls[-1].method == "resolveSnapshotConflict"
+		and fake.calls[-1].arguments.slice(0, 3) == ["conflict-1", "server", bytes],
+		"Google conflict resolution dispatches through the Java snapshot method"
+	)
 	fake.conflictResolved.emit(true, JSON.stringify({
 		"content": [1, 2, 3],
 		"metadata": {"snapshotId": "resolved", "uniqueName": "slot-a"},
@@ -1149,6 +1215,56 @@ func _test_google_adapter(test_config: GameServicesConfig) -> void:
 	service.queue_free()
 	Engine.unregister_singleton("GodotPlayGameServices")
 	fake.free()
+
+
+func _test_google_java_method_probe(test_config: GameServicesConfig) -> void:
+	var probe := GoogleJavaMethodProbe.new()
+	Engine.register_singleton("GodotPlayGameServices", probe)
+	var service := GameServicesScript.new()
+	service.auto_initialize = false
+	root.add_child(service)
+
+	var initialized := service.initialize(test_config, GooglePlayGamesProvider.new())
+	_check(initialized.ok, "Google Java method probe initializes")
+	_check(
+		not probe.has_method("saveGame")
+		and not probe.has_method("loadGame")
+		and not probe.has_method("loadSnapshots")
+		and not probe.has_method("deleteSnapshot")
+		and not probe.has_method("resolveSnapshotConflict"),
+		"Google Java probe has no ordinary GDScript snapshot methods"
+	)
+	_check(
+		service.supports(service.Capability.CLOUD_SAVES),
+		"Google Java methods advertise cloud saves without Object.has_method"
+	)
+
+	service.shutdown()
+	service.queue_free()
+	Engine.unregister_singleton("GodotPlayGameServices")
+	probe.free()
+
+	var incomplete_probe := GoogleJavaMethodProbe.new()
+	incomplete_probe.java_methods.erase("resolveSnapshotConflict")
+	Engine.register_singleton("GodotPlayGameServices", incomplete_probe)
+	var incomplete_service := GameServicesScript.new()
+	incomplete_service.auto_initialize = false
+	root.add_child(incomplete_service)
+
+	var incomplete_initialized := incomplete_service.initialize(
+		test_config,
+		GooglePlayGamesProvider.new()
+	)
+	_check(incomplete_initialized.ok, "Incomplete Google Java method probe initializes")
+	_check(
+		not incomplete_service.supports(incomplete_service.Capability.CLOUD_SAVES),
+		"Google Java method probe requires conflict resolution support"
+	)
+
+	incomplete_service.shutdown()
+	incomplete_service.queue_free()
+	Engine.unregister_singleton("GodotPlayGameServices")
+	incomplete_probe.free()
 
 
 func _test_apple_adapter(test_config: GameServicesConfig) -> void:
